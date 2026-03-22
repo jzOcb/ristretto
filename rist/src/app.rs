@@ -1,6 +1,6 @@
 //! Application state for the Ristretto terminal client.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use rist_shared::protocol::Event;
 use rist_shared::{AgentInfo, AgentStatus, SessionId};
@@ -30,6 +30,7 @@ pub struct App {
     locale: String,
     status_message: String,
     task_events: Vec<String>,
+    output_states: HashMap<SessionId, OutputState>,
 }
 
 /// Available main-pane layouts.
@@ -69,6 +70,7 @@ impl App {
             locale,
             status_message: String::new(),
             task_events: Vec::new(),
+            output_states: HashMap::new(),
         }
     }
 
@@ -99,7 +101,7 @@ impl App {
             LayoutMode::SidebarSplit | LayoutMode::Grid => self
                 .focused_agent
                 .and_then(|index| {
-                    if self.agents.is_empty() {
+                    if self.agents.len() < 2 {
                         None
                     } else {
                         Some((index + 1) % self.agents.len())
@@ -122,6 +124,7 @@ impl App {
     pub fn refresh_agents(&mut self, mut agents: Vec<AgentInfo>) {
         agents.sort_by_key(|agent| agent.created_at);
         self.agents = agents;
+        self.prune_agent_state();
 
         self.focused_agent = match self.focused_agent {
             Some(index) if index < self.agents.len() => Some(index),
@@ -134,12 +137,12 @@ impl App {
     pub async fn refresh_visible_outputs(&mut self, client: &DaemonClient) {
         if let Some(agent) = self.focused_agent_info() {
             if let Ok(lines) = client.get_output(agent.id, 200).await {
-                self.agent_outputs.insert(agent.id, lines);
+                self.replace_output(agent.id, lines);
             }
         }
         if let Some(agent) = self.split_agent_info() {
             if let Ok(lines) = client.get_output(agent.id, 200).await {
-                self.agent_outputs.insert(agent.id, lines);
+                self.replace_output(agent.id, lines);
             }
         }
     }
@@ -165,13 +168,11 @@ impl App {
     pub fn task_panel_lines(&self) -> Vec<String> {
         if self.show_task_graph {
             if self.task_events.is_empty() {
-                return vec![
-                    self.status_message.clone(),
-                    "Task graph unavailable in Phase 1A daemon.".to_owned(),
-                ];
+                return vec![self.status_message.clone()];
             }
             let mut lines = vec![self.status_message.clone()];
-            lines.extend(self.task_events.iter().rev().take(7).cloned());
+            let start = self.task_events.len().saturating_sub(7);
+            lines.extend(self.task_events[start..].iter().cloned());
             return lines;
         }
 
@@ -225,15 +226,29 @@ impl App {
 
     /// Appends PTY output lines to the local cache.
     pub fn append_output(&mut self, id: SessionId, chunk: &[u8]) {
-        let text = String::from_utf8_lossy(chunk);
         let cache = self.agent_outputs.entry(id).or_default();
-        for line in text.lines() {
-            cache.push(line.to_owned());
+        let state = self.output_states.entry(id).or_default();
+        state.utf8_tail.extend_from_slice(chunk);
+
+        let decoded = match std::str::from_utf8(&state.utf8_tail) {
+            Ok(_) => {
+                let text = String::from_utf8_lossy(&state.utf8_tail).into_owned();
+                state.utf8_tail.clear();
+                text
+            }
+            Err(error) => {
+                let valid_up_to = error.valid_up_to();
+                let text = String::from_utf8_lossy(&state.utf8_tail[..valid_up_to]).into_owned();
+                let tail = state.utf8_tail.split_off(valid_up_to);
+                state.utf8_tail = tail;
+                text
+            }
+        };
+
+        for ch in decoded.chars() {
+            state.push_char(cache, ch);
         }
-        if cache.len() > 400 {
-            let overflow = cache.len() - 400;
-            cache.drain(0..overflow);
-        }
+        trim_lines(cache, 400);
     }
 
     fn apply_daemon_event(&mut self, event: Event) {
@@ -272,6 +287,115 @@ impl App {
             self.task_events.drain(0..overflow);
         }
     }
+
+    fn prune_agent_state(&mut self) {
+        let active_ids = self.agents.iter().map(|agent| agent.id).collect::<HashSet<_>>();
+        self.agent_outputs
+            .retain(|session_id, _| active_ids.contains(session_id));
+        self.output_states
+            .retain(|session_id, _| active_ids.contains(session_id));
+    }
+
+    fn replace_output(&mut self, id: SessionId, lines: Vec<String>) {
+        self.agent_outputs.insert(id, lines);
+        self.output_states.remove(&id);
+    }
+}
+
+#[derive(Default)]
+struct OutputState {
+    utf8_tail: Vec<u8>,
+    ansi_state: AnsiState,
+    line_open: bool,
+}
+
+#[derive(Clone, Copy, Default)]
+enum AnsiState {
+    #[default]
+    Ground,
+    Escape,
+    Csi,
+    Osc,
+    OscEscape,
+}
+
+impl OutputState {
+    fn push_char(&mut self, cache: &mut Vec<String>, ch: char) {
+        match self.ansi_state {
+            AnsiState::Ground => match ch {
+                '\u{1b}' => self.ansi_state = AnsiState::Escape,
+                '\n' => self.finish_line(cache),
+                '\r' => self.reset_line(cache),
+                '\u{8}' => {
+                    if self.line_open {
+                        if let Some(line) = cache.last_mut() {
+                            line.pop();
+                        }
+                    }
+                }
+                ch if ch.is_control() => {}
+                _ => {
+                    self.open_line(cache);
+                    if let Some(line) = cache.last_mut() {
+                        line.push(ch);
+                    }
+                }
+            },
+            AnsiState::Escape => {
+                self.ansi_state = match ch {
+                    '[' => AnsiState::Csi,
+                    ']' => AnsiState::Osc,
+                    _ => AnsiState::Ground,
+                };
+            }
+            AnsiState::Csi => {
+                if ('@'..='~').contains(&ch) {
+                    self.ansi_state = AnsiState::Ground;
+                }
+            }
+            AnsiState::Osc => match ch {
+                '\u{7}' => self.ansi_state = AnsiState::Ground,
+                '\u{1b}' => self.ansi_state = AnsiState::OscEscape,
+                _ => {}
+            },
+            AnsiState::OscEscape => {
+                self.ansi_state = if ch == '\\' {
+                    AnsiState::Ground
+                } else {
+                    AnsiState::Osc
+                };
+            }
+        }
+    }
+
+    fn open_line(&mut self, cache: &mut Vec<String>) {
+        if !self.line_open {
+            cache.push(String::new());
+            self.line_open = true;
+        }
+    }
+
+    fn finish_line(&mut self, cache: &mut Vec<String>) {
+        if !self.line_open {
+            cache.push(String::new());
+        }
+        self.line_open = false;
+    }
+
+    fn reset_line(&mut self, cache: &mut [String]) {
+        if self.line_open {
+            if let Some(line) = cache.last_mut() {
+                line.clear();
+            }
+        }
+    }
+}
+
+fn trim_lines(cache: &mut Vec<String>, max_lines: usize) {
+    if cache.len() > max_lines {
+        let overflow = cache.len() - max_lines;
+        cache.drain(0..overflow);
+    }
 }
 
 fn status_label(status: &AgentStatus) -> &'static str {
@@ -289,7 +413,32 @@ fn status_label(status: &AgentStatus) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    use rist_shared::protocol::Event;
+    use rist_shared::{AgentInfo, AgentStatus, AgentType, SessionId, TaskStatus};
+    use serde_json::json;
+
     use super::{App, LayoutMode};
+
+    fn sample_agent(task: &str) -> AgentInfo {
+        serde_json::from_value(json!({
+            "id": SessionId::new(),
+            "agent_type": AgentType::Codex,
+            "task": task,
+            "status": AgentStatus::Idle,
+            "workdir": PathBuf::from("/tmp"),
+            "branch": null,
+            "file_ownership": [],
+            "created_at": "2024-01-01T00:00:00Z",
+            "last_output_at": null,
+            "context_usage": null,
+            "exit_code": null,
+            "metadata": HashMap::<String, String>::new(),
+        }))
+        .expect("sample agent should deserialize")
+    }
 
     #[test]
     fn split_toggle_roundtrips() {
@@ -308,5 +457,63 @@ mod tests {
         let mut app = App::new("en".to_owned());
         app.cycle_focus();
         assert_eq!(app.focused_agent, None);
+    }
+
+    #[test]
+    fn split_layout_hides_secondary_when_only_one_agent_exists() {
+        let mut app = App::new("en".to_owned());
+        app.layout_mode = LayoutMode::SidebarSplit;
+        app.refresh_agents(vec![sample_agent("solo")]);
+        assert!(app.split_agent_info().is_none());
+    }
+
+    #[test]
+    fn refresh_agents_prunes_removed_output_state() {
+        let mut app = App::new("en".to_owned());
+        let first = sample_agent("first");
+        let second = sample_agent("second");
+
+        app.refresh_agents(vec![first.clone(), second.clone()]);
+        app.append_output(first.id, b"hello");
+        app.append_output(second.id, b"world");
+
+        app.refresh_agents(vec![first]);
+
+        assert!(app.agent_outputs.contains_key(&app.agents[0].id));
+        assert_eq!(app.agent_outputs.len(), 1);
+    }
+
+    #[test]
+    fn task_panel_preserves_chronological_order() {
+        let mut app = App::new("en".to_owned());
+        app.show_task_graph = true;
+        app.set_status_message("status");
+        app.apply_daemon_event(Event::TaskUpdate {
+            task_id: "1".to_owned(),
+            status: TaskStatus::Pending,
+        });
+        app.apply_daemon_event(Event::TaskUpdate {
+            task_id: "2".to_owned(),
+            status: TaskStatus::Working,
+        });
+
+        let lines = app.task_panel_lines();
+        assert_eq!(lines[1], "task 1: Pending");
+        assert_eq!(lines[2], "task 2: Working");
+    }
+
+    #[test]
+    fn append_output_handles_chunked_utf8_and_ansi_sequences() {
+        let mut app = App::new("en".to_owned());
+        let id = SessionId::new();
+
+        app.append_output(id, b"\x1b[31mhel");
+        app.append_output(id, &[0x6c, 0x6f, 0x20, 0xF0, 0x9F]);
+        app.append_output(id, &[0x98, 0x80, b'\n']);
+
+        assert_eq!(
+            app.agent_outputs.get(&id),
+            Some(&vec!["hello 😀".to_owned()])
+        );
     }
 }

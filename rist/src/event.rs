@@ -6,6 +6,8 @@ use std::time::Duration;
 use crossterm::event::{self, Event as CrosstermEvent, KeyCode, KeyEvent, KeyModifiers};
 use tokio::sync::mpsc::{self, UnboundedReceiver};
 
+use rist_shared::AgentType;
+
 use crate::app::{App, InputMode};
 use rist::daemon_client::DaemonClient;
 
@@ -88,7 +90,17 @@ async fn handle_normal_mode(
             Ok(false)
         }
         KeyCode::Char('n') | KeyCode::Char('N') => {
-            app.set_status_message("spawn not implemented");
+            let id = client
+                .spawn_agent(
+                    AgentType::Codex,
+                    "Interactive Codex session started from rist".to_owned(),
+                )
+                .await?;
+            app.set_status_message(format!("spawned agent {}", id.0));
+            if let Ok(agents) = client.list_agents().await {
+                app.refresh_agents(agents);
+            }
+            app.refresh_visible_outputs(client).await;
             Ok(true)
         }
         KeyCode::Char('k') | KeyCode::Char('K') => {
