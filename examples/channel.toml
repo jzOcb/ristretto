@@ -1,0 +1,18 @@
+# Ristretto Channel Configuration
+# Place at ~/.ristretto/channel.toml
+
+# Default event notifications written to files
+[[default_routes]]
+event = "status_change"
+transport = "file"
+path = "~/.ristretto/events/"
+
+[[default_routes]]
+event = "agent_exited"
+transport = "file"
+path = "~/.ristretto/events/"
+
+# Optional webhook for external integrations
+# [[webhooks]]
+# url = "http://localhost:8080/events"
+# events = ["agent_exited", "task_update"]

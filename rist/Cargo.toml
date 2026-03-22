@@ -1,8 +1,13 @@
 [package]
 name = "rist"
+description = "Terminal-native TUI for supervising parallel Ristretto agent sessions"
 edition.workspace = true
 version.workspace = true
-license.workspace = true
+license = "MIT"
+repository = "https://github.com/jzOcb/ristretto"
+homepage = "https://github.com/jzOcb/ristretto"
+keywords = ["ai", "agents", "orchestration", "terminal", "tui"]
+categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
 clap.workspace = true

@@ -1,4 +1,5 @@
 /target
-**/*.rs.bk
-*.pdb
+*.swp
+*.swo
 .DS_Store
+.ristretto/

@@ -1,8 +1,13 @@
 [package]
 name = "ristd"
+description = "Daemon for multi-agent orchestration, worktree isolation, and recovery in Ristretto"
 edition.workspace = true
 version.workspace = true
-license.workspace = true
+license = "MIT"
+repository = "https://github.com/jzOcb/ristretto"
+homepage = "https://github.com/jzOcb/ristretto"
+keywords = ["ai", "agents", "orchestration", "daemon", "git"]
+categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
 chrono.workspace = true
@@ -23,4 +28,3 @@ tempfile.workspace = true
 
 [lints]
 workspace = true
-

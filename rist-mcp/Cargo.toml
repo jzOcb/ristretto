@@ -1,8 +1,13 @@
 [package]
 name = "rist-mcp"
+description = "Model Context Protocol server for controlling Ristretto agent sessions"
 edition.workspace = true
 version.workspace = true
-license.workspace = true
+license = "MIT"
+repository = "https://github.com/jzOcb/ristretto"
+homepage = "https://github.com/jzOcb/ristretto"
+keywords = ["mcp", "ai", "agents", "orchestration", "automation"]
+categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
 chrono.workspace = true

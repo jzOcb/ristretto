@@ -1,8 +1,13 @@
 [package]
 name = "rist-shared"
+description = "Shared protocol types, localization, and utilities for the Ristretto workspace"
 edition.workspace = true
 version.workspace = true
-license.workspace = true
+license = "MIT"
+repository = "https://github.com/jzOcb/ristretto"
+homepage = "https://github.com/jzOcb/ristretto"
+keywords = ["ai", "agents", "orchestration", "protocol", "i18n"]
+categories = ["development-tools", "internationalization"]
 
 [lib]
 name = "rist_shared"
@@ -18,4 +23,3 @@ uuid.workspace = true
 
 [lints]
 workspace = true
-

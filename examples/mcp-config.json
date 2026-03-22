@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "ristretto": {
+      "command": "rist-mcp",
+      "args": [],
+      "env": {}
+    }
+  }
+}
