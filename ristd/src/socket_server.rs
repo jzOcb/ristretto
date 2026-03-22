@@ -16,6 +16,7 @@ use rist_shared::{AgentInfo, AgentStatus, AgentType, SessionId, TaskGraph};
 
 use crate::planner::TaskPlanner;
 use crate::pty_manager::PtyManager;
+use crate::review_engine::ReviewEngine;
 use crate::session_store::SessionStore;
 
 enum ServerFrame {
@@ -68,6 +69,24 @@ impl SocketServer {
                 tick.tick().await;
                 let _ =
                     sync_agent_state(&sync_pty_manager, &sync_session_store, &sync_clients).await;
+            }
+        });
+
+        let health_pty_manager = Arc::clone(&self.pty_manager);
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_secs(5));
+            loop {
+                tick.tick().await;
+                let actions = {
+                    let mut manager = health_pty_manager.lock().await;
+                    manager.health_check()
+                };
+                for (id, action) in actions {
+                    if let crate::recovery::RecoveryAction::Nudge(prompt) = action {
+                        let mut manager = health_pty_manager.lock().await;
+                        let _ = manager.write_to_agent(id, &format!("{prompt}\n"));
+                    }
+                }
             }
         });
 
@@ -351,8 +370,34 @@ async fn dispatch_request(
                 },
             }
         }
+        Request::RequestReview {
+            agent_id,
+            reviewer_type,
+            ..
+        } => {
+            let mut manager = pty_manager.lock().await;
+            match manager.request_review(*agent_id) {
+                Ok(review_request) => {
+                    let engine = ReviewEngine::new();
+                    let default_reviewer = engine.reviewer_for(&review_request.source_type);
+                    let mut prompt = engine.build_review_prompt(&review_request);
+                    if *reviewer_type != default_reviewer {
+                        prompt = format!(
+                            "Preferred reviewer type: {:?}\n{}\n",
+                            reviewer_type, prompt
+                        );
+                    }
+                    Response::Output {
+                        lines: prompt.lines().map(ToOwned::to_owned).collect(),
+                    }
+                }
+                Err(error) => Response::Error {
+                    message: error.to_string(),
+                },
+            }
+        }
         Request::Subscribe { .. } => Response::Ok,
-        Request::RequestReview { .. } | Request::Unknown => Response::Error {
+        Request::Unknown => Response::Error {
             message: "request not implemented".to_owned(),
         },
     }

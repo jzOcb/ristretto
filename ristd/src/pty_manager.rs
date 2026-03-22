@@ -14,18 +14,32 @@ use nix::sys::signal::{kill, Signal};
 use nix::unistd::Pid;
 use portable_pty::{native_pty_system, Child, MasterPty, PtySize};
 use rist_shared::protocol::Event;
-use rist_shared::{AgentInfo, AgentStatus, AgentType, MergeStrategy, SessionId};
+use rist_shared::{
+    AgentInfo, AgentStatus, AgentType, ContextUsage, MergeStrategy, SessionId,
+};
 
 use crate::agent_adapter::{
     agent_type_key, AgentAdapter, ClaudeCodeAdapter, CodexAdapter, DefaultAdapter, GeminiAdapter,
 };
+use crate::context_monitor::ContextMonitor;
 use crate::context_injector::generate_context_file;
 use crate::file_ownership::FileOwnership;
 use crate::git_manager::{GitManager, MergePreview, MergeResult};
+use crate::recovery::{RecoveryAction, RecoveryManager};
+use crate::review_engine::ReviewRequest;
 use crate::ring_buffer::RingBuffer;
 
+const DEFAULT_ROTATION_THRESHOLD: f64 = 80.0;
 const STATUS_SAMPLE_BYTES: usize = 8192;
 const CONTEXT_FILE_NAME: &str = "RISTRETTO.md";
+const PROGRESS_FILE_NAME: &str = "PROGRESS.md";
+const RECENT_OUTPUT_LIMIT: usize = 64;
+
+#[derive(Debug, Default)]
+struct SessionTelemetry {
+    total_output_bytes: usize,
+    recent_lines: VecDeque<String>,
+}
 
 struct PtySession {
     info: AgentInfo,
@@ -34,7 +48,14 @@ struct PtySession {
     child: Box<dyn Child + Send + Sync>,
     ring_buffer: Arc<Mutex<RingBuffer>>,
     last_output_at: Arc<Mutex<Option<DateTime<Utc>>>>,
+    telemetry: Arc<Mutex<SessionTelemetry>>,
     adapter_key: String,
+    recovery_attempts: usize,
+    idle_nudged: bool,
+    context_warning_sent: bool,
+    last_observed_output_bytes: usize,
+    last_recovery_issue: Option<String>,
+    last_loop_pattern: Option<String>,
     exited: bool,
 }
 
@@ -45,6 +66,8 @@ pub struct PtyManager {
     adapters: HashMap<String, Box<dyn AgentAdapter>>,
     pending_events: Arc<Mutex<VecDeque<Event>>>,
     file_ownership: FileOwnership,
+    context_monitor: ContextMonitor,
+    recovery_manager: RecoveryManager,
 }
 
 impl PtyManager {
@@ -57,6 +80,8 @@ impl PtyManager {
             adapters: HashMap::new(),
             pending_events: Arc::new(Mutex::new(VecDeque::new())),
             file_ownership: FileOwnership::new(),
+            context_monitor: ContextMonitor::new(DEFAULT_ROTATION_THRESHOLD),
+            recovery_manager: RecoveryManager::new(),
         };
         manager.register_adapter(AgentType::Claude, Box::new(ClaudeCodeAdapter));
         manager.register_adapter(AgentType::Codex, Box::new(CodexAdapter));
@@ -166,6 +191,8 @@ impl PtyManager {
         let ring_buffer_for_thread = Arc::clone(&ring_buffer);
         let last_output_at = Arc::new(Mutex::new(Some(Utc::now())));
         let last_output_for_thread = Arc::clone(&last_output_at);
+        let telemetry = Arc::new(Mutex::new(SessionTelemetry::default()));
+        let telemetry_for_thread = Arc::clone(&telemetry);
         let pending_events = Arc::clone(&self.pending_events);
 
         thread::spawn(move || {
@@ -177,6 +204,20 @@ impl PtyManager {
                     Ok(count) => {
                         if let Ok(mut buffer) = ring_buffer_for_thread.lock() {
                             buffer.push(&chunk[..count]);
+                        }
+                        if let Ok(mut telemetry) = telemetry_for_thread.lock() {
+                            telemetry.total_output_bytes += count;
+                            let text = String::from_utf8_lossy(&chunk[..count]);
+                            for line in text.lines() {
+                                let trimmed = line.trim();
+                                if trimmed.is_empty() {
+                                    continue;
+                                }
+                                telemetry.recent_lines.push_back(trimmed.to_owned());
+                                while telemetry.recent_lines.len() > RECENT_OUTPUT_LIMIT {
+                                    let _ = telemetry.recent_lines.pop_front();
+                                }
+                            }
                         }
                         if let Ok(mut last_output) = last_output_for_thread.lock() {
                             *last_output = Some(Utc::now());
@@ -202,7 +243,14 @@ impl PtyManager {
                 child,
                 ring_buffer,
                 last_output_at,
+                telemetry,
                 adapter_key,
+                recovery_attempts: 0,
+                idle_nudged: false,
+                context_warning_sent: false,
+                last_observed_output_bytes: 0,
+                last_recovery_issue: None,
+                last_loop_pattern: None,
                 exited: false,
             },
         );
@@ -467,6 +515,158 @@ impl PtyManager {
         ))
     }
 
+    /// Checks active agents for context pressure and recoverable unhealthy states.
+    pub fn health_check(&mut self) -> Vec<(SessionId, RecoveryAction)> {
+        self.check_exits();
+
+        let mut actions = Vec::new();
+        let adapters = &self.adapters;
+        let pending_events = Arc::clone(&self.pending_events);
+        let context_monitor = self.context_monitor;
+        let recovery_manager = self.recovery_manager.clone();
+
+        for session in self.sessions.values_mut() {
+            if session.exited {
+                continue;
+            }
+
+            let total_output_bytes = session
+                .telemetry
+                .lock()
+                .map(|telemetry| telemetry.total_output_bytes)
+                .unwrap_or_default();
+            if total_output_bytes > session.last_observed_output_bytes {
+                session.last_observed_output_bytes = total_output_bytes;
+                session.idle_nudged = false;
+                session.recovery_attempts = 0;
+                session.last_recovery_issue = None;
+            }
+
+            let buffer_snapshot = session
+                .ring_buffer
+                .lock()
+                .map(|buffer| buffer.snapshot())
+                .unwrap_or_default();
+            let usage_pct = context_monitor.estimate_usage(&session.info, &buffer_snapshot);
+            session.info.context_usage = Some(ContextUsage {
+                estimated_tokens: u64::try_from(total_output_bytes / 4).unwrap_or(u64::MAX),
+                max_tokens: default_context_tokens(&session.info.agent_type),
+                percentage: usage_pct,
+            });
+            if context_monitor.should_rotate(usage_pct) {
+                if !session.context_warning_sent {
+                    push_event(
+                        &pending_events,
+                        Event::ContextWarning {
+                            id: session.info.id,
+                            usage_pct,
+                        },
+                    );
+                    session.context_warning_sent = true;
+                }
+            } else {
+                session.context_warning_sent = false;
+            }
+
+            let recent_output = session
+                .telemetry
+                .lock()
+                .map(|telemetry| telemetry.recent_lines.iter().cloned().collect::<Vec<_>>())
+                .unwrap_or_default();
+            let loop_pattern = adapters
+                .get(&session.adapter_key)
+                .and_then(|adapter| adapter.detect_loop(&buffer_snapshot));
+            if loop_pattern != session.last_loop_pattern {
+                if let Some(pattern) = &loop_pattern {
+                    push_event(
+                        &pending_events,
+                        Event::LoopDetected {
+                            id: session.info.id,
+                            pattern: pattern.clone(),
+                        },
+                    );
+                }
+                session.last_loop_pattern = loop_pattern.clone();
+            }
+
+            let idle_retry_count = usize::from(session.idle_nudged);
+            let retry_count = if loop_pattern.is_some() || session.info.status == AgentStatus::Error
+            {
+                session.recovery_attempts
+            } else {
+                idle_retry_count
+            };
+            let action = recovery_manager.evaluate(&session.info, &recent_output, retry_count);
+            let issue_key = issue_key(&session.info, loop_pattern.as_deref());
+            if let Some(key) = issue_key {
+                if session.last_recovery_issue.as_deref() == Some(key.as_str()) {
+                    continue;
+                }
+                session.last_recovery_issue = Some(key);
+            } else {
+                session.last_recovery_issue = None;
+            }
+
+            if let Some(action) = action {
+                match &action {
+                    RecoveryAction::Nudge(_) => {
+                        session.idle_nudged = true;
+                    }
+                    RecoveryAction::Restart { .. } => {
+                        session.recovery_attempts += 1;
+                        session.idle_nudged = false;
+                    }
+                    RecoveryAction::Escalate { .. } | RecoveryAction::Fail(_) => {}
+                }
+                actions.push((session.info.id, action));
+            }
+        }
+
+        actions
+    }
+
+    /// Sends a context-rotation prompt to the agent session.
+    pub fn trigger_rotation(&mut self, id: SessionId) -> io::Result<()> {
+        let prompt = {
+            let session = self
+                .sessions
+                .get(&id)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "session not found"))?;
+            let recent_output = session
+                .telemetry
+                .lock()
+                .map(|telemetry| telemetry.recent_lines.iter().cloned().collect::<Vec<_>>())
+                .unwrap_or_default();
+            let progress_path = session.info.workdir.join(PROGRESS_FILE_NAME);
+            self.context_monitor.rotation_prompt(
+                &session.info,
+                &recent_output,
+                progress_path.to_str(),
+            )
+        };
+        self.write_to_agent(id, &format!("{prompt}\n"))
+    }
+
+    /// Builds a cross-review request for the selected agent session.
+    pub fn request_review(&mut self, id: SessionId) -> io::Result<ReviewRequest> {
+        let info = self.agent_info(id)?.clone();
+        let repo_path = repo_path_from_info(&info)?;
+        let branch = info
+            .branch
+            .as_deref()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "agent has no branch"))?;
+        let diff = GitManager::preview_merge(&repo_path, branch)?.diff;
+        let file_list = git_diff_name_only(&repo_path, branch)?;
+
+        Ok(ReviewRequest {
+            source_agent: id,
+            source_type: info.agent_type,
+            diff,
+            task_description: info.task,
+            file_list,
+        })
+    }
+
     fn refresh_runtime_state(
         session: &mut PtySession,
         adapters: &HashMap<String, Box<dyn AgentAdapter>>,
@@ -604,6 +804,56 @@ fn repo_path_from_info(info: &AgentInfo) -> io::Result<PathBuf> {
         .get("repo_path")
         .map(PathBuf::from)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "agent has no repository"))
+}
+
+fn default_context_tokens(agent_type: &AgentType) -> u64 {
+    match agent_type {
+        AgentType::Claude => 200_000,
+        AgentType::Codex => 192_000,
+        AgentType::Gemini => 1_000_000,
+        AgentType::Custom(_) | AgentType::Unknown => 128_000,
+    }
+}
+
+fn git_diff_name_only(repo_path: &Path, branch: &str) -> io::Result<Vec<PathBuf>> {
+    let repo = git2::Repository::open(repo_path).map_err(io::Error::other)?;
+    let output = Command::new("git")
+        .args(["diff", "--name-only", "HEAD", branch])
+        .current_dir(repo.workdir().unwrap_or(repo_path))
+        .output()?;
+    if !output.status.success() {
+        return Err(io::Error::other(format!(
+            "git diff --name-only failed with status {}",
+            output.status
+        )));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(PathBuf::from)
+        .collect())
+}
+
+fn issue_key(info: &AgentInfo, loop_pattern: Option<&str>) -> Option<String> {
+    if let Some(pattern) = loop_pattern {
+        Some(format!("loop:{pattern}"))
+    } else if info.status == AgentStatus::Error {
+        Some(format!("error:{}", info.exit_code.unwrap_or_default()))
+    } else {
+        info.last_output_at.and_then(|last_output| {
+            (Utc::now() - last_output)
+                .to_std()
+                .ok()
+                .filter(|elapsed| *elapsed >= Duration::from_secs(300))
+                .map(|_| "idle".to_owned())
+        })
+    }
+}
+
+fn push_event(pending_events: &Arc<Mutex<VecDeque<Event>>>, event: Event) {
+    if let Ok(mut events) = pending_events.lock() {
+        events.push_back(event);
+    }
 }
 
 fn ristretto_shared_dir() -> PathBuf {
