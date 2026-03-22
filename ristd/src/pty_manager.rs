@@ -14,15 +14,13 @@ use nix::sys::signal::{kill, Signal};
 use nix::unistd::Pid;
 use portable_pty::{native_pty_system, Child, MasterPty, PtySize};
 use rist_shared::protocol::Event;
-use rist_shared::{
-    AgentInfo, AgentStatus, AgentType, ContextUsage, MergeStrategy, SessionId,
-};
+use rist_shared::{AgentInfo, AgentStatus, AgentType, ContextUsage, MergeStrategy, SessionId};
 
 use crate::agent_adapter::{
     agent_type_key, AgentAdapter, ClaudeCodeAdapter, CodexAdapter, DefaultAdapter, GeminiAdapter,
 };
-use crate::context_monitor::ContextMonitor;
 use crate::context_injector::generate_context_file;
+use crate::context_monitor::ContextMonitor;
 use crate::file_ownership::FileOwnership;
 use crate::git_manager::{GitManager, MergePreview, MergeResult};
 use crate::recovery::{RecoveryAction, RecoveryManager};

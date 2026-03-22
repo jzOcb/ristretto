@@ -129,7 +129,12 @@ VERDICT: APPROVED | CHANGES REQUESTED | NEEDS DISCUSSION\n\
 ERROR|WARNING|INFO|NIT: <message> in <file>:<line>\n\
 SUGGESTED FIX: <fix>\n\n\
 Diff:\n{}",
-            reviewer, request.source_type, request.source_agent.0, request.task_description, files, request.diff
+            reviewer,
+            request.source_type,
+            request.source_agent.0,
+            request.task_description,
+            files,
+            request.diff
         )
     }
 
@@ -252,9 +257,7 @@ mod tests {
 
     use rist_shared::{AgentType, SessionId};
 
-    use super::{
-        CommentSeverity, ReviewEngine, ReviewRequest, ReviewVerdict,
-    };
+    use super::{CommentSeverity, ReviewEngine, ReviewRequest, ReviewVerdict};
 
     #[test]
     fn reviewer_for_returns_cross_model_pairs() {

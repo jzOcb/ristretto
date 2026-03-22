@@ -83,7 +83,10 @@ impl ContextMonitor {
         prompt.push_str(&format!("- {}\n\n", agent.task));
 
         prompt.push_str("Progress so far:\n");
-        if let Some(progress) = progress.as_deref().filter(|content| !content.trim().is_empty()) {
+        if let Some(progress) = progress
+            .as_deref()
+            .filter(|content| !content.trim().is_empty())
+        {
             prompt.push_str(progress.trim());
             prompt.push('\n');
         } else {
@@ -154,7 +157,10 @@ fn parse_percentage(line: &str) -> Option<f64> {
         if ch.is_ascii_digit() || ch == '.' {
             number.push(ch);
         } else if ch == '%' && !number.is_empty() {
-            return number.parse::<f64>().ok().map(|value| value.clamp(0.0, 100.0));
+            return number
+                .parse::<f64>()
+                .ok()
+                .map(|value| value.clamp(0.0, 100.0));
         } else if !number.is_empty() {
             number.clear();
         }
@@ -205,7 +211,8 @@ fn pct_from_ratio(used: u64, max: u64) -> f64 {
 }
 
 fn summarize_lines(lines: &[String], keywords: &[&str]) -> Vec<String> {
-    lines.iter()
+    lines
+        .iter()
         .rev()
         .filter(|line| {
             let lower = line.to_ascii_lowercase();
@@ -287,8 +294,11 @@ mod tests {
     #[test]
     fn rotation_prompt_includes_task_and_progress() {
         let temp = tempdir().expect("tempdir");
-        fs::write(temp.path().join("PROGRESS.md"), "Implemented parser\nRemaining: tests")
-            .expect("write progress");
+        fs::write(
+            temp.path().join("PROGRESS.md"),
+            "Implemented parser\nRemaining: tests",
+        )
+        .expect("write progress");
         let info = agent(
             temp.path().to_path_buf(),
             AgentType::Codex,

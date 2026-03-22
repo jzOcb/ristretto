@@ -150,6 +150,8 @@ pub enum EventFilter {
     ContextWarning,
     /// Receive loop detection events.
     LoopDetected,
+    /// Receive all broadcast events.
+    All,
     /// Forward-compatible fallback for unknown values.
     #[serde(other)]
     Unknown,

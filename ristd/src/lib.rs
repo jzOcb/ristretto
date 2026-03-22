@@ -1,8 +1,8 @@
 //! Daemon core modules shared by the binary and tests.
 
 pub mod agent_adapter;
-pub mod context_monitor;
 pub mod context_injector;
+pub mod context_monitor;
 pub mod file_ownership;
 pub mod git_manager;
 pub mod planner;

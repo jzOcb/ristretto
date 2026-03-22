@@ -382,10 +382,8 @@ async fn dispatch_request(
                     let default_reviewer = engine.reviewer_for(&review_request.source_type);
                     let mut prompt = engine.build_review_prompt(&review_request);
                     if *reviewer_type != default_reviewer {
-                        prompt = format!(
-                            "Preferred reviewer type: {:?}\n{}\n",
-                            reviewer_type, prompt
-                        );
+                        prompt =
+                            format!("Preferred reviewer type: {:?}\n{}\n", reviewer_type, prompt);
                     }
                     Response::Output {
                         lines: prompt.lines().map(ToOwned::to_owned).collect(),

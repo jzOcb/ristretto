@@ -143,7 +143,10 @@ fn is_looping(recent_output: &[String], loop_threshold: usize) -> bool {
     if recent_output.len() < loop_threshold {
         return false;
     }
-    let last = recent_output.last().map(|line| line.trim()).unwrap_or_default();
+    let last = recent_output
+        .last()
+        .map(|line| line.trim())
+        .unwrap_or_default();
     !last.is_empty()
         && recent_output
             .iter()
@@ -191,7 +194,10 @@ mod tests {
     #[test]
     fn evaluate_detects_stuck_agent_and_nudges_first() {
         let manager = RecoveryManager::new();
-        let idle_agent = agent(AgentStatus::Working, Utc::now() - ChronoDuration::minutes(10));
+        let idle_agent = agent(
+            AgentStatus::Working,
+            Utc::now() - ChronoDuration::minutes(10),
+        );
 
         let action = manager.evaluate(&idle_agent, &["thinking".to_owned()], 0);
 
