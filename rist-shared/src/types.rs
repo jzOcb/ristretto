@@ -1,10 +1,13 @@
 //! Shared domain and IPC data types.
 
 use std::collections::HashMap;
+use std::fmt;
 use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::de::{self};
+use serde::ser::SerializeStruct;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use uuid::Uuid;
 
 /// Stable session identifier used across the daemon, TUI, and MCP servers.
@@ -22,13 +25,12 @@ impl SessionId {
 
 impl Default for SessionId {
     fn default() -> Self {
-        Self::new()
+        Self(Uuid::nil())
     }
 }
 
 /// Supported agent families.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentType {
     /// Anthropic Claude Code.
     Claude,
@@ -39,8 +41,53 @@ pub enum AgentType {
     /// Arbitrary user-defined agent type.
     Custom(String),
     /// Forward-compatible fallback for unknown values.
-    #[serde(other)]
     Unknown,
+}
+
+impl Serialize for AgentType {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = match self {
+            Self::Custom(_) => serializer.serialize_struct("AgentType", 2)?,
+            _ => serializer.serialize_struct("AgentType", 1)?,
+        };
+        match self {
+            Self::Claude => state.serialize_field("kind", "claude")?,
+            Self::Codex => state.serialize_field("kind", "codex")?,
+            Self::Gemini => state.serialize_field("kind", "gemini")?,
+            Self::Custom(name) => {
+                state.serialize_field("kind", "custom")?;
+                state.serialize_field("value", name)?;
+            }
+            Self::Unknown => state.serialize_field("kind", "unknown")?,
+        }
+        state.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for AgentType {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct RawAgentType {
+            kind: String,
+            #[serde(default)]
+            value: Option<String>,
+        }
+
+        let raw = RawAgentType::deserialize(deserializer)?;
+        Ok(match raw.kind.as_str() {
+            "claude" => Self::Claude,
+            "codex" => Self::Codex,
+            "gemini" => Self::Gemini,
+            "custom" => raw.value.map(Self::Custom).unwrap_or(Self::Unknown),
+            _ => Self::Unknown,
+        })
+    }
 }
 
 /// Live status for an agent session.
@@ -64,6 +111,21 @@ pub enum AgentStatus {
     /// Forward-compatible fallback for unknown values.
     #[serde(other)]
     Unknown,
+}
+
+impl fmt::Display for AgentStatus {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Idle => "idle",
+            Self::Working => "working",
+            Self::Thinking => "thinking",
+            Self::Waiting => "waiting",
+            Self::Stuck => "stuck",
+            Self::Done => "done",
+            Self::Error => "error",
+            Self::Unknown => "unknown",
+        })
+    }
 }
 
 /// Execution status for a task in the task graph.
@@ -177,7 +239,7 @@ pub enum MessageType {
 }
 
 /// Tracks estimated context usage for an agent session.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ContextUsage {
     /// Estimated number of used tokens.
     pub estimated_tokens: u64,
@@ -185,6 +247,46 @@ pub struct ContextUsage {
     pub max_tokens: u64,
     /// Used context as a percentage in the `[0.0, 100.0]` range.
     pub percentage: f64,
+}
+
+impl Serialize for ContextUsage {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        if self.percentage.is_nan() {
+            return Err(serde::ser::Error::custom("percentage must not be NaN"));
+        }
+        let mut state = serializer.serialize_struct("ContextUsage", 3)?;
+        state.serialize_field("estimated_tokens", &self.estimated_tokens)?;
+        state.serialize_field("max_tokens", &self.max_tokens)?;
+        state.serialize_field("percentage", &self.percentage.clamp(0.0, 100.0))?;
+        state.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for ContextUsage {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct RawContextUsage {
+            estimated_tokens: u64,
+            max_tokens: u64,
+            percentage: f64,
+        }
+
+        let raw = RawContextUsage::deserialize(deserializer)?;
+        if raw.percentage.is_nan() {
+            return Err(de::Error::custom("percentage must not be NaN"));
+        }
+        Ok(Self {
+            estimated_tokens: raw.estimated_tokens,
+            max_tokens: raw.max_tokens,
+            percentage: raw.percentage.clamp(0.0, 100.0),
+        })
+    }
 }
 
 /// Persisted and broadcast session metadata.
@@ -217,7 +319,7 @@ pub struct AgentInfo {
 }
 
 /// A node in the planner task graph.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Task {
     /// Stable task identifier.
     pub id: String,
@@ -237,6 +339,62 @@ pub struct Task {
     pub depends_on: Vec<String>,
     /// Owned files for this task.
     pub file_ownership: Vec<PathBuf>,
+}
+
+impl Serialize for Task {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        validate_task_id(&self.id).map_err(serde::ser::Error::custom)?;
+        let mut state = serializer.serialize_struct("Task", 9)?;
+        state.serialize_field("id", &self.id)?;
+        state.serialize_field("title", &self.title)?;
+        state.serialize_field("description", &self.description)?;
+        state.serialize_field("status", &self.status)?;
+        state.serialize_field("priority", &self.priority)?;
+        state.serialize_field("agent_type", &self.agent_type)?;
+        state.serialize_field("owner", &self.owner)?;
+        state.serialize_field("depends_on", &self.depends_on)?;
+        state.serialize_field("file_ownership", &self.file_ownership)?;
+        state.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for Task {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct RawTask {
+            id: String,
+            title: String,
+            description: Option<String>,
+            status: TaskStatus,
+            priority: Priority,
+            agent_type: Option<AgentType>,
+            owner: Option<SessionId>,
+            #[serde(default)]
+            depends_on: Vec<String>,
+            #[serde(default)]
+            file_ownership: Vec<PathBuf>,
+        }
+
+        let raw = RawTask::deserialize(deserializer)?;
+        validate_task_id(&raw.id).map_err(de::Error::custom)?;
+        Ok(Self {
+            id: raw.id,
+            title: raw.title,
+            description: raw.description,
+            status: raw.status,
+            priority: raw.priority,
+            agent_type: raw.agent_type,
+            owner: raw.owner,
+            depends_on: raw.depends_on,
+            file_ownership: raw.file_ownership,
+        })
+    }
 }
 
 /// Whole planner task graph snapshot.
@@ -268,8 +426,11 @@ pub struct Message {
 #[cfg(test)]
 mod tests {
     use serde_json::json;
+    use uuid::Uuid;
 
-    use super::{AgentStatus, AgentType, MessageType, Priority, TaskStatus};
+    use super::{
+        AgentStatus, AgentType, ContextUsage, MessageType, Priority, SessionId, Task, TaskStatus,
+    };
 
     #[test]
     fn string_enums_support_unknown_fallback() {
@@ -300,4 +461,55 @@ mod tests {
             serde_json::from_value(json!({"kind":"future_agent"})).expect("deserialize");
         assert_eq!(decoded, AgentType::Unknown);
     }
+
+    #[test]
+    fn session_id_default_is_nil() {
+        assert_eq!(SessionId::default().0, Uuid::nil());
+    }
+
+    #[test]
+    fn context_usage_clamps_percentage() {
+        let usage: ContextUsage = serde_json::from_value(json!({
+            "estimated_tokens": 1,
+            "max_tokens": 2,
+            "percentage": 125.5
+        }))
+        .expect("deserialize");
+        assert_eq!(usage.percentage, 100.0);
+    }
+
+    #[test]
+    fn context_usage_rejects_nan() {
+        let error = serde_json::to_value(ContextUsage {
+            estimated_tokens: 1,
+            max_tokens: 2,
+            percentage: f64::NAN,
+        })
+        .expect_err("nan must fail");
+        assert!(error.to_string().contains("NaN"));
+    }
+
+    #[test]
+    fn task_id_must_be_non_empty() {
+        let error = serde_json::from_value::<Task>(json!({
+            "id": "   ",
+            "title": "Title",
+            "description": null,
+            "status": "pending",
+            "priority": "medium",
+            "agent_type": null,
+            "owner": null,
+            "depends_on": [],
+            "file_ownership": []
+        }))
+        .expect_err("empty id must fail");
+        assert!(error.to_string().contains("task id"));
+    }
+}
+
+fn validate_task_id(id: &str) -> Result<(), &'static str> {
+    if id.trim().is_empty() {
+        return Err("task id must not be empty");
+    }
+    Ok(())
 }

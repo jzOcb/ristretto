@@ -272,7 +272,7 @@ async fn dispatch_request(
         } => {
             let mut manager = pty_manager.lock().await;
             match manager.wait_for_idle(*id, *timeout_secs, *settling_secs) {
-                Ok(_) => Response::Ok,
+                Ok((status, timed_out)) => Response::WaitStatus { status, timed_out },
                 Err(error) => Response::Error {
                     message: error.to_string(),
                 },

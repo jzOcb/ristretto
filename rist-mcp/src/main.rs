@@ -4,6 +4,7 @@ mod tools;
 
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
+use std::sync::Once;
 
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -11,6 +12,7 @@ use serde_json::{json, Value};
 use rist::daemon_client::DaemonClient;
 
 const PROTOCOL_VERSION: &str = "2024-11-05";
+static HOME_WARNING: Once = Once::new();
 
 #[derive(Debug, Deserialize)]
 struct JsonRpcRequest {
@@ -24,7 +26,14 @@ struct JsonRpcRequest {
 fn ristretto_dir() -> PathBuf {
     std::env::var_os("HOME")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
+        .unwrap_or_else(|| {
+            HOME_WARNING.call_once(|| {
+                eprintln!(
+                    "warning: HOME is unset; falling back to current directory for .ristretto"
+                );
+            });
+            PathBuf::from(".")
+        })
         .join(".ristretto")
 }
 

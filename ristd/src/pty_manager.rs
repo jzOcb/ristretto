@@ -468,7 +468,7 @@ impl PtyManager {
         id: SessionId,
         timeout_secs: u64,
         settling_secs: u64,
-    ) -> io::Result<AgentStatus> {
+    ) -> io::Result<(AgentStatus, bool)> {
         let timeout = Duration::from_secs(timeout_secs);
         let settling = Duration::from_secs(settling_secs);
         let start = std::time::Instant::now();
@@ -482,16 +482,16 @@ impl PtyManager {
                 .is_some_and(|elapsed| elapsed >= settling);
 
             match info.status {
-                AgentStatus::Idle if settled => return Ok(AgentStatus::Idle),
+                AgentStatus::Idle if settled => return Ok((AgentStatus::Idle, false)),
                 AgentStatus::Done | AgentStatus::Error | AgentStatus::Stuck => {
-                    return Ok(info.status)
+                    return Ok((info.status, false))
                 }
-                AgentStatus::Waiting if settled => return Ok(AgentStatus::Waiting),
+                AgentStatus::Waiting if settled => return Ok((AgentStatus::Waiting, false)),
                 _ => {}
             }
 
             if start.elapsed() >= timeout {
-                return Ok(info.status);
+                return Ok((info.status, true));
             }
 
             thread::sleep(Duration::from_millis(200));

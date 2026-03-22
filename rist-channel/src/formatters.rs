@@ -10,7 +10,7 @@ pub fn format_event_notification(event: &Event) -> String {
     match event {
         Event::StatusChange { id, old, new } => {
             format!(
-                "[ristretto] Agent {} changed status: {:?} -> {:?}",
+                "[ristretto] Agent {} changed status: {} -> {}",
                 id.0, old, new
             )
         }

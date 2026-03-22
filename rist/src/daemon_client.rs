@@ -1,17 +1,21 @@
 //! Async Unix-socket client for the Ristretto daemon.
 
 use std::collections::VecDeque;
+use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use serde::de::{self, SeqAccess, Visitor};
 use serde::Deserialize;
 use tokio::io::AsyncReadExt;
 use tokio::net::UnixStream;
 use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
 
-use rist_shared::protocol::{decode_frame_async, encode_frame_async, Event, Request, Response};
+use rist_shared::protocol::{
+    decode_frame_async, encode_frame_async, Event, Request, Response, MAX_FRAME_BYTES,
+};
 use rist_shared::{
     AgentInfo, AgentStatus, AgentType, EventFilter, MergeStrategy, SessionId, Task, TaskStatus,
 };
@@ -70,12 +74,17 @@ enum DaemonFrame {
         stderr: String,
         exit_code: i32,
     },
+    WaitStatus {
+        status: AgentStatus,
+        timed_out: bool,
+    },
     Ok,
     Error {
         message: String,
     },
     PtyData {
         id: SessionId,
+        #[serde(with = "base64_bytes")]
         data: Vec<u8>,
     },
     StatusChange {
@@ -266,7 +275,11 @@ impl DaemonClient {
     }
 
     /// Waits for an agent to reach an idle or terminal state.
-    pub async fn wait_for_idle(&self, id: SessionId, timeout_secs: u64) -> io::Result<()> {
+    pub async fn wait_for_idle(
+        &self,
+        id: SessionId,
+        timeout_secs: u64,
+    ) -> io::Result<(rist_shared::AgentStatus, bool)> {
         match self
             .request(Request::WaitForIdle {
                 id,
@@ -275,7 +288,7 @@ impl DaemonClient {
             })
             .await?
         {
-            Response::Ok => Ok(()),
+            Response::WaitStatus { status, timed_out } => Ok((status, timed_out)),
             other => unexpected_response("wait_for_idle", other),
         }
     }
@@ -500,6 +513,12 @@ where
     reader.read_exact(&mut len_buf).await?;
     let length = usize::try_from(u32::from_be_bytes(len_buf))
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    if length > MAX_FRAME_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("IPC frame exceeds maximum size of {MAX_FRAME_BYTES} bytes"),
+        ));
+    }
     let mut payload = vec![0_u8; length];
     reader.read_exact(&mut payload).await?;
     let frame: DaemonFrame = serde_json::from_slice(&payload)
@@ -531,6 +550,9 @@ impl DaemonFrame {
                 stderr,
                 exit_code,
             }),
+            Self::WaitStatus { status, timed_out } => {
+                FrameKind::Response(Response::WaitStatus { status, timed_out })
+            }
             Self::Ok => FrameKind::Response(Response::Ok),
             Self::Error { message } => FrameKind::Response(Response::Error { message }),
             Self::PtyData { id, data } => FrameKind::Event(Event::PtyData { id, data }),
@@ -587,4 +609,83 @@ fn unexpected_response<T>(operation: &str, response: Response) -> io::Result<T> 
         io::ErrorKind::InvalidData,
         format!("unexpected response for {operation}: {response:?}"),
     ))
+}
+
+mod base64_bytes {
+    use std::vec::Vec;
+
+    use super::{de, fmt, SeqAccess, Visitor};
+    use serde::Deserializer;
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct BytesVisitor;
+
+        impl<'de> Visitor<'de> for BytesVisitor {
+            type Value = Vec<u8>;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a base64 string or byte array")
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                decode_base64(value).map_err(E::custom)
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                let mut bytes = Vec::new();
+                while let Some(byte) = seq.next_element::<u8>()? {
+                    bytes.push(byte);
+                }
+                Ok(bytes)
+            }
+        }
+
+        deserializer.deserialize_any(BytesVisitor)
+    }
+
+    fn decode_base64(value: &str) -> Result<Vec<u8>, &'static str> {
+        let bytes = value.as_bytes();
+        if !bytes.len().is_multiple_of(4) {
+            return Err("invalid base64 length");
+        }
+
+        let mut decoded = Vec::with_capacity((bytes.len() / 4) * 3);
+        for chunk in bytes.chunks_exact(4) {
+            let mut values = [0_u8; 4];
+            let mut padding = 0;
+            for (index, byte) in chunk.iter().copied().enumerate() {
+                values[index] = match byte {
+                    b'A'..=b'Z' => byte - b'A',
+                    b'a'..=b'z' => byte - b'a' + 26,
+                    b'0'..=b'9' => byte - b'0' + 52,
+                    b'+' => 62,
+                    b'/' => 63,
+                    b'=' => {
+                        padding += 1;
+                        0
+                    }
+                    _ => return Err("invalid base64 character"),
+                };
+            }
+
+            decoded.push((values[0] << 2) | (values[1] >> 4));
+            if padding < 2 {
+                decoded.push((values[1] << 4) | (values[2] >> 2));
+            }
+            if padding == 0 {
+                decoded.push((values[2] << 6) | values[3]);
+            }
+        }
+
+        Ok(decoded)
+    }
 }

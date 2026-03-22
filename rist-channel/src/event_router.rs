@@ -87,16 +87,17 @@ impl EventRouter {
 }
 
 fn filter_matches_event(filter: &EventFilter, event: &Event) -> bool {
-    matches!(filter, EventFilter::All)
-        || matches!(
-            (filter, event),
-            (EventFilter::PtyData, Event::PtyData { .. })
-                | (EventFilter::StatusChange, Event::StatusChange { .. })
-                | (EventFilter::AgentExited, Event::AgentExited { .. })
-                | (EventFilter::TaskUpdate, Event::TaskUpdate { .. })
-                | (EventFilter::ContextWarning, Event::ContextWarning { .. })
-                | (EventFilter::LoopDetected, Event::LoopDetected { .. })
-        )
+    match (filter, event) {
+        (EventFilter::All, _) => true,
+        (EventFilter::PtyData, Event::PtyData { .. }) => true,
+        (EventFilter::StatusChange, Event::StatusChange { .. }) => true,
+        (EventFilter::AgentExited, Event::AgentExited { .. }) => true,
+        (EventFilter::TaskUpdate, Event::TaskUpdate { .. }) => true,
+        (EventFilter::ContextWarning, Event::ContextWarning { .. }) => true,
+        (EventFilter::LoopDetected, Event::LoopDetected { .. }) => true,
+        (EventFilter::Unknown, _) | (_, Event::Unknown) => false,
+        _ => false,
+    }
 }
 
 #[cfg(test)]

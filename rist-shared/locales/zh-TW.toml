@@ -1,0 +1,14 @@
+[agent]
+spawning = "正在啟動 %{agent_type} 代理: %{task}"
+completed = "代理 %{id} 已完成 (退出碼 %{code})"
+stuck = "代理 %{id} 疑似卡住 (已 %{minutes} 分鐘無輸出)"
+loop_detected = "代理 %{id} 陷入循環: %{pattern}"
+
+[planner]
+decomposing = "正在分解任務..."
+plan_ready = "計畫就緒 - %{count} 個子任務，%{parallel} 個可並行"
+approve = "檢查計畫後按 Enter 批准，按 'e' 編輯"
+
+[tui]
+status_bar = "Ristretto - %{count} 個代理"
+help = "按 ? 查看說明"

@@ -20,7 +20,7 @@ pub fn tool_definitions() -> Vec<Value> {
                 "properties": {
                     "agent_type": {
                         "type": "string",
-                        "enum": ["claude_code", "codex", "gemini", "custom"]
+                        "description": "Built-ins: claude_code, codex, gemini. Any other non-empty string is treated as a custom agent type."
                     },
                     "task": { "type": "string" },
                     "repo_path": { "type": "string" },
@@ -144,7 +144,7 @@ pub fn tool_definitions() -> Vec<Value> {
                                 },
                                 "agent_type": {
                                     "type": "string",
-                                    "enum": ["claude_code", "codex", "gemini", "custom"]
+                                    "description": "Built-ins: claude_code, codex, gemini. Any other non-empty string is treated as a custom agent type."
                                 },
                                 "depends_on": {
                                     "type": "array",
@@ -232,7 +232,7 @@ pub async fn handle_tool_call(
         }
         "get_agent_output" => {
             let session_id = parse_session_id(required_str(&arguments, "session_id")?)?;
-            let lines = optional_u64(&arguments, "lines").unwrap_or(50) as usize;
+            let lines = optional_u64(&arguments, "lines")?.unwrap_or(50) as usize;
             let output = client
                 .get_output(session_id, lines)
                 .await
@@ -267,21 +267,15 @@ pub async fn handle_tool_call(
         }
         "wait_for_idle" => {
             let session_id = parse_session_id(required_str(&arguments, "session_id")?)?;
-            let timeout_secs = optional_u64(&arguments, "timeout_secs").unwrap_or(300);
-            client
+            let timeout_secs = optional_u64(&arguments, "timeout_secs")?.unwrap_or(300);
+            let (status, timed_out) = client
                 .wait_for_idle(session_id, timeout_secs)
                 .await
                 .map_err(|error| error.to_string())?;
-            let status = client
-                .list_agents()
-                .await
-                .map_err(|error| error.to_string())?
-                .into_iter()
-                .find(|agent| agent.id == session_id)
-                .map(|agent| agent_status_name(&agent.status).to_owned())
-                .unwrap_or_else(|| "unknown".to_owned());
-            let timed_out = matches!(status.as_str(), "working" | "thinking");
-            Ok(json!({ "status": status, "timed_out": timed_out }))
+            Ok(json!({
+                "status": agent_status_name(&status),
+                "timed_out": timed_out
+            }))
         }
         "run_command" => {
             let session_id = parse_session_id(required_str(&arguments, "session_id")?)?;
@@ -380,7 +374,7 @@ fn empty_schema() -> Value {
 
 fn parse_task(value: &Value) -> Result<Task, String> {
     Ok(Task {
-        id: required_str(value, "id")?.to_owned(),
+        id: required_non_empty_str(value, "id")?.to_owned(),
         title: required_str(value, "title")?.to_owned(),
         description: optional_str(value, "description").map(ToOwned::to_owned),
         status: parse_task_status(optional_str(value, "status").unwrap_or("pending"))?,
@@ -401,11 +395,13 @@ fn task_to_json(task: Task) -> Value {
     json!({
         "id": task.id,
         "title": task.title,
+        "description": task.description,
         "status": task_status_name(&task.status),
         "priority": priority_name(&task.priority),
+        "agent_type": task.agent_type.as_ref().map(agent_type_name),
         "owner": task.owner.map(|owner| owner.0.to_string()),
+        "file_ownership": task.file_ownership.into_iter().map(path_string).collect::<Vec<_>>(),
         "depends_on": task.depends_on,
-        "files": task.file_ownership.into_iter().map(path_string).collect::<Vec<_>>(),
     })
 }
 
@@ -420,8 +416,8 @@ fn parse_agent_type(value: &str) -> Result<AgentType, String> {
         "claude_code" => Ok(AgentType::Claude),
         "codex" => Ok(AgentType::Codex),
         "gemini" => Ok(AgentType::Gemini),
-        "custom" => Ok(AgentType::Custom("custom".to_owned())),
-        other => Err(format!("unsupported agent_type: {other}")),
+        other if other.trim().is_empty() => Err("agent_type must not be empty".to_owned()),
+        other => Ok(AgentType::Custom(other.to_owned())),
     }
 }
 
@@ -463,6 +459,14 @@ fn required_str<'a>(value: &'a Value, key: &str) -> Result<&'a str, String> {
         .ok_or_else(|| format!("missing required field: {key}"))
 }
 
+fn required_non_empty_str<'a>(value: &'a Value, key: &str) -> Result<&'a str, String> {
+    let raw = required_str(value, key)?;
+    if raw.trim().is_empty() {
+        return Err(format!("field {key} must not be empty"));
+    }
+    Ok(raw)
+}
+
 fn optional_str<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
     value.get(key).and_then(Value::as_str)
 }
@@ -471,8 +475,15 @@ fn optional_bool(value: &Value, key: &str) -> Option<bool> {
     value.get(key).and_then(Value::as_bool)
 }
 
-fn optional_u64(value: &Value, key: &str) -> Option<u64> {
-    value.get(key).and_then(Value::as_u64)
+fn optional_u64(value: &Value, key: &str) -> Result<Option<u64>, String> {
+    match value.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Number(number)) => number
+            .as_u64()
+            .map(Some)
+            .ok_or_else(|| format!("field {key} must be a non-negative integer")),
+        Some(_) => Err(format!("field {key} must be a non-negative integer")),
+    }
 }
 
 fn optional_string_array(value: &Value, key: &str) -> Result<Vec<String>, String> {
@@ -490,13 +501,13 @@ fn optional_string_array(value: &Value, key: &str) -> Result<Vec<String>, String
     }
 }
 
-fn agent_type_name(agent_type: &AgentType) -> &'static str {
+fn agent_type_name(agent_type: &AgentType) -> String {
     match agent_type {
-        AgentType::Claude => "claude_code",
-        AgentType::Codex => "codex",
-        AgentType::Gemini => "gemini",
-        AgentType::Custom(_) => "custom",
-        AgentType::Unknown => "unknown",
+        AgentType::Claude => "claude_code".to_owned(),
+        AgentType::Codex => "codex".to_owned(),
+        AgentType::Gemini => "gemini".to_owned(),
+        AgentType::Custom(name) => name.clone(),
+        AgentType::Unknown => "unknown".to_owned(),
     }
 }
 

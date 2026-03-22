@@ -2,9 +2,8 @@
 
 use std::fs::{create_dir_all, OpenOptions};
 use std::io::{self, Write};
-use std::net::{TcpStream, ToSocketAddrs};
 use std::path::Path;
-use std::time::Duration;
+use std::process::{Command, Stdio};
 
 use chrono::Utc;
 use serde_json::json;
@@ -47,10 +46,10 @@ impl EventTransport for McpChannelTransport {
             ));
         };
 
-        let mut stdout = io::stdout().lock();
-        stdout.write_all(message.as_bytes())?;
-        stdout.write_all(b"\n")?;
-        stdout.flush()
+        let mut stderr = io::stderr().lock();
+        stderr.write_all(message.as_bytes())?;
+        stderr.write_all(b"\n")?;
+        stderr.flush()
     }
 }
 
@@ -123,63 +122,46 @@ impl FileTransport {
 }
 
 impl WebhookTransport {
-    /// POSTs an event as JSON to an `http://` webhook endpoint.
+    /// POSTs an event as JSON to an `http://` or `https://` webhook endpoint.
     pub fn post_event(url: &str, event: &Event) -> io::Result<()> {
         Self::post_payload(url, &format_event_json(event))
     }
 
     fn post_payload(url: &str, payload: &str) -> io::Result<()> {
-        let Some(rest) = url.strip_prefix("http://") else {
+        if !(url.starts_with("http://") || url.starts_with("https://")) {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "only http:// webhooks are supported",
+                "only http:// and https:// webhooks are supported",
             ));
-        };
+        }
 
-        let (authority, path) = match rest.split_once('/') {
-            Some((authority, path)) => (authority, format!("/{}", path)),
-            None => (rest, "/".to_owned()),
-        };
-        let (host, port) = match authority.split_once(':') {
-            Some((host, port)) => {
-                let parsed_port = port.parse::<u16>().map_err(|error| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        format!("invalid webhook port: {error}"),
-                    )
-                })?;
-                (host, parsed_port)
-            }
-            None => (authority, 80),
-        };
+        let output = Command::new("curl")
+            .arg("--silent")
+            .arg("--show-error")
+            .arg("--fail")
+            .arg("--max-time")
+            .arg("2")
+            .arg("--header")
+            .arg("Content-Type: application/json")
+            .arg("--data-binary")
+            .arg(payload)
+            .arg(url)
+            .stdin(Stdio::null())
+            .output()?;
 
-        let body = payload.to_owned();
-        let host = host.to_owned();
-        std::thread::spawn(move || {
-            let mut addrs = match (host.as_str(), port).to_socket_addrs() {
-                Ok(addrs) => addrs,
-                Err(_) => return,
-            };
-            let Some(addr) = addrs.next() else {
-                return;
-            };
-            let mut stream = match TcpStream::connect_timeout(&addr, Duration::from_secs(2)) {
-                Ok(stream) => stream,
-                Err(_) => return,
-            };
-            let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
-            let request = format!(
-                "POST {path} HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n{body}",
-                path = path,
-                host = host,
-                length = body.len(),
-                body = body,
-            );
-            let _ = stream.write_all(request.as_bytes());
-            let _ = stream.flush();
-        });
+        if output.status.success() {
+            return Ok(());
+        }
 
-        Ok(())
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        Err(io::Error::new(
+            io::ErrorKind::Other,
+            if stderr.is_empty() {
+                format!("curl exited with status {}", output.status)
+            } else {
+                format!("webhook delivery failed: {stderr}")
+            },
+        ))
     }
 }
 
