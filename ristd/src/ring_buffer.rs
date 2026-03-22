@@ -1,10 +1,12 @@
 //! In-memory PTY scrollback storage.
 
+use std::collections::VecDeque;
+
 /// Simple byte ring buffer with fixed capacity.
 #[derive(Debug, Clone)]
 pub struct RingBuffer {
     capacity: usize,
-    buffer: Vec<u8>,
+    buffer: VecDeque<u8>,
 }
 
 impl RingBuffer {
@@ -13,7 +15,7 @@ impl RingBuffer {
     pub fn new(capacity: usize) -> Self {
         Self {
             capacity,
-            buffer: Vec::with_capacity(capacity.min(4096)),
+            buffer: VecDeque::with_capacity(capacity.min(4096)),
         }
     }
 
@@ -21,7 +23,8 @@ impl RingBuffer {
     pub fn push(&mut self, data: &[u8]) {
         if data.len() >= self.capacity {
             self.buffer.clear();
-            self.buffer.extend_from_slice(&data[data.len() - self.capacity..]);
+            self.buffer
+                .extend(data[data.len() - self.capacity..].iter().copied());
             return;
         }
 
@@ -33,30 +36,35 @@ impl RingBuffer {
         if overflow > 0 {
             self.buffer.drain(..overflow);
         }
-        self.buffer.extend_from_slice(data);
+        self.buffer.extend(data.iter().copied());
     }
 
-    /// Returns the last `n_bytes` bytes as a contiguous slice.
+    /// Returns the last `n_bytes` bytes as a contiguous vector.
     #[must_use]
-    pub fn tail(&self, n_bytes: usize) -> &[u8] {
-        let start = self.buffer.len().saturating_sub(n_bytes);
-        &self.buffer[start..]
+    pub fn tail(&self, n_bytes: usize) -> Vec<u8> {
+        let keep = self.buffer.len().min(n_bytes);
+        self.buffer
+            .iter()
+            .skip(self.buffer.len().saturating_sub(keep))
+            .copied()
+            .collect()
     }
 
     /// Returns the last `n` UTF-8-decoded lines.
     #[must_use]
     pub fn tail_lines(&self, n: usize) -> Vec<String> {
-        let text = String::from_utf8_lossy(&self.buffer);
+        let bytes = self.snapshot();
+        let text = String::from_utf8_lossy(&bytes);
         let mut lines: Vec<String> = text.lines().map(ToOwned::to_owned).collect();
         let keep_from = lines.len().saturating_sub(n);
         lines.drain(..keep_from);
         lines
     }
 
-    /// Returns the full buffered contents.
+    /// Returns the full buffered contents without mutating the buffer.
     #[must_use]
-    pub fn drain_all(&self) -> Vec<u8> {
-        self.buffer.clone()
+    pub fn snapshot(&self) -> Vec<u8> {
+        self.buffer.iter().copied().collect()
     }
 }
 
@@ -83,14 +91,23 @@ mod tests {
         let mut buffer = RingBuffer::new(5);
         buffer.push(b"abc");
         buffer.push(b"def");
-        assert_eq!(buffer.drain_all(), b"bcdef");
+        assert_eq!(buffer.snapshot(), b"bcdef");
+    }
+
+    #[test]
+    fn replacing_with_large_write_keeps_latest_capacity() {
+        let mut buffer = RingBuffer::new(4);
+        buffer.push(b"abcdef");
+        assert_eq!(buffer.snapshot(), b"cdef");
     }
 
     #[test]
     fn tail_lines_returns_latest_lines() {
         let mut buffer = RingBuffer::new(64);
         buffer.push(b"one\ntwo\nthree\nfour\n");
-        assert_eq!(buffer.tail_lines(2), vec!["three".to_owned(), "four".to_owned()]);
+        assert_eq!(
+            buffer.tail_lines(2),
+            vec!["three".to_owned(), "four".to_owned()]
+        );
     }
 }
-

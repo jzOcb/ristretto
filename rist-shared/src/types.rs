@@ -273,8 +273,10 @@ mod tests {
     fn string_enums_support_unknown_fallback() {
         let status: AgentStatus = serde_json::from_value(json!("future_status")).expect("status");
         let task: TaskStatus = serde_json::from_value(json!("future_task")).expect("task");
-        let priority: Priority = serde_json::from_value(json!("future_priority")).expect("priority");
-        let message: MessageType = serde_json::from_value(json!("future_message")).expect("message");
+        let priority: Priority =
+            serde_json::from_value(json!("future_priority")).expect("priority");
+        let message: MessageType =
+            serde_json::from_value(json!("future_message")).expect("message");
 
         assert_eq!(status, AgentStatus::Unknown);
         assert_eq!(task, TaskStatus::Unknown);
@@ -284,7 +286,8 @@ mod tests {
 
     #[test]
     fn agent_type_custom_roundtrip() {
-        let encoded = serde_json::to_value(AgentType::Custom("my-agent".to_owned())).expect("serialize");
+        let encoded =
+            serde_json::to_value(AgentType::Custom("my-agent".to_owned())).expect("serialize");
         let decoded: AgentType = serde_json::from_value(encoded).expect("deserialize");
         assert_eq!(decoded, AgentType::Custom("my-agent".to_owned()));
     }

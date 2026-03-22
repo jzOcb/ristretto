@@ -61,7 +61,11 @@ impl SessionStore {
 
     /// Updates a session record in place.
     pub fn update(&mut self, session: AgentInfo) {
-        if let Some(existing) = self.sessions.iter_mut().find(|candidate| candidate.id == session.id) {
+        if let Some(existing) = self
+            .sessions
+            .iter_mut()
+            .find(|candidate| candidate.id == session.id)
+        {
             *existing = session;
         } else {
             self.sessions.push(session);
@@ -79,4 +83,3 @@ impl SessionStore {
         &self.sessions
     }
 }
-

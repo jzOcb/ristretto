@@ -8,4 +8,3 @@ pub mod types;
 
 pub use protocol::{decode_frame, decode_frame_async, encode_frame, encode_frame_async};
 pub use types::*;
-

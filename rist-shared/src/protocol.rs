@@ -269,14 +269,12 @@ where
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     let mut payload = vec![0_u8; length];
     reader.read_exact(&mut payload)?;
-    serde_json::from_slice(&payload).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+    serde_json::from_slice(&payload)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
 /// Writes a length-prefixed JSON frame to an asynchronous writer.
-pub async fn encode_frame_async<W>(
-    writer: &mut W,
-    message: &impl Serialize,
-) -> io::Result<()>
+pub async fn encode_frame_async<W>(writer: &mut W, message: &impl Serialize) -> io::Result<()>
 where
     W: AsyncWrite + Unpin,
 {
@@ -297,7 +295,8 @@ where
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     let mut payload = vec![0_u8; length];
     reader.read_exact(&mut payload).await?;
-    serde_json::from_slice(&payload).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+    serde_json::from_slice(&payload)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
 #[cfg(test)]
@@ -311,7 +310,9 @@ mod tests {
 
     use crate::types::{AgentInfo, AgentStatus, AgentType, ContextUsage, EventFilter, SessionId};
 
-    use super::{decode_frame, decode_frame_async, encode_frame, encode_frame_async, Request, Response};
+    use super::{
+        decode_frame, decode_frame_async, encode_frame, encode_frame_async, Request, Response,
+    };
 
     fn sample_agent() -> AgentInfo {
         AgentInfo {
@@ -350,15 +351,17 @@ mod tests {
             events: vec![EventFilter::PtyData],
         };
         let (mut client, mut server) = duplex(1024);
-        encode_frame_async(&mut client, &request).await.expect("encode");
+        encode_frame_async(&mut client, &request)
+            .await
+            .expect("encode");
         let decoded: Request = decode_frame_async(&mut server).await.expect("decode");
         assert_eq!(request, decoded);
     }
 
     #[test]
     fn request_unknown_variant_deserializes() {
-        let decoded: Request =
-            serde_json::from_str(r#"{"type":"future_request"}"#).expect("deserialize unknown request");
+        let decoded: Request = serde_json::from_str(r#"{"type":"future_request"}"#)
+            .expect("deserialize unknown request");
         assert_eq!(decoded, Request::Unknown);
     }
 

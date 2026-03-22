@@ -22,4 +22,3 @@ pub fn tr(key: &str) -> String {
     rust_i18n::set_locale(&preferred_locale());
     rust_i18n::t!(key).into_owned()
 }
-

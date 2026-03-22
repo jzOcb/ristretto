@@ -2,12 +2,11 @@
 
 use std::fs::{self, File, OpenOptions};
 use std::io;
-use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use clap::Parser;
-use nix::fcntl::{flock, FlockArg};
+use nix::fcntl::{Flock, FlockArg};
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::Mutex;
 use tracing::info;
@@ -39,16 +38,15 @@ fn ristretto_dir() -> PathBuf {
         .join(".ristretto")
 }
 
-#[allow(deprecated)]
-fn lock_pid_file(path: &Path) -> io::Result<File> {
-    let mut file = OpenOptions::new()
+fn lock_pid_file(path: &Path) -> io::Result<Flock<File>> {
+    let file = OpenOptions::new()
         .create(true)
         .truncate(true)
         .write(true)
         .read(true)
         .open(path)?;
-    flock(file.as_raw_fd(), FlockArg::LockExclusiveNonblock)
-        .map_err(|error| io::Error::new(io::ErrorKind::WouldBlock, error))?;
+    let mut file = Flock::lock(file, FlockArg::LockExclusiveNonblock)
+        .map_err(|(_, error)| io::Error::new(io::ErrorKind::WouldBlock, error))?;
     use std::io::Write as _;
     file.write_all(format!("{}\n", std::process::id()).as_bytes())?;
     file.sync_all()?;
@@ -80,7 +78,12 @@ async fn main() -> io::Result<()> {
 
     let session_store = Arc::new(Mutex::new(SessionStore::load(&sessions_path)?));
     let pty_manager = Arc::new(Mutex::new(PtyManager::new()));
-    let server = SocketServer::bind(&socket_path, Arc::clone(&pty_manager), Arc::clone(&session_store)).await?;
+    let server = SocketServer::bind(
+        &socket_path,
+        Arc::clone(&pty_manager),
+        Arc::clone(&session_store),
+    )
+    .await?;
 
     info!("ristd listening on {}", socket_path.display());
 
