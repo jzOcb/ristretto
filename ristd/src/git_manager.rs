@@ -179,21 +179,38 @@ impl GitManager {
         let workdir = repo.workdir().unwrap_or(repo_path);
         let base = run_git_capture(workdir, ["merge-base", "HEAD", branch])?;
         let output = run_git_capture(workdir, ["merge-tree", base.trim(), "HEAD", branch])?;
+        let mut conflicts = Vec::new();
+        let mut in_conflict = false;
 
-        Ok(output
-            .lines()
-            .filter_map(|line| {
-                line.strip_prefix("changed in both\n")
-                    .map(|_| String::new())
-            })
-            .collect::<Vec<_>>()
-            .into_iter()
-            .chain(output.lines().filter_map(|line| {
-                line.strip_prefix("  our ")
-                    .map(ToOwned::to_owned)
-                    .or_else(|| line.strip_prefix("  their ").map(ToOwned::to_owned))
-            }))
-            .collect())
+        for line in output.lines() {
+            let trimmed = line.trim_start();
+            if line == "changed in both" {
+                in_conflict = true;
+                continue;
+            }
+            if in_conflict && line.starts_with("@@") {
+                in_conflict = false;
+                continue;
+            }
+            if !in_conflict {
+                continue;
+            }
+
+            let marker = trimmed
+                .strip_prefix("our ")
+                .or_else(|| trimmed.strip_prefix("their "));
+            let Some(entry) = marker else {
+                continue;
+            };
+            let Some(path) = entry.split_whitespace().last() else {
+                continue;
+            };
+            if !conflicts.iter().any(|existing| existing == path) {
+                conflicts.push(path.to_owned());
+            }
+        }
+
+        Ok(conflicts)
     }
 
     /// Generates a URL-friendly task slug for worktree branch names.
@@ -336,5 +353,41 @@ mod tests {
 
         GitManager::remove_worktree(dir.path(), &worktree, true).expect("remove");
         assert!(!worktree.exists());
+    }
+
+    #[test]
+    fn detect_conflicts_returns_conflicted_paths() {
+        let (dir, repo) = init_repo();
+        let sig = Signature::now("Ristretto", "ristretto@example.com").expect("sig");
+
+        let head = repo.head().expect("head");
+        let commit = head.peel_to_commit().expect("commit");
+        repo.branch("feature", &commit, false).expect("branch");
+
+        fs::write(dir.path().join("README.md"), "feature\n").expect("write feature");
+        let mut index = repo.index().expect("index");
+        index.add_path(Path::new("README.md")).expect("add");
+        let tree_id = index.write_tree().expect("tree");
+        let tree = repo.find_tree(tree_id).expect("tree");
+        repo.commit(
+            Some("refs/heads/feature"),
+            &sig,
+            &sig,
+            "feature",
+            &tree,
+            &[&commit],
+        )
+        .expect("commit feature");
+
+        fs::write(dir.path().join("README.md"), "main\n").expect("write main");
+        let mut index = repo.index().expect("index");
+        index.add_path(Path::new("README.md")).expect("add");
+        let tree_id = index.write_tree().expect("tree");
+        let tree = repo.find_tree(tree_id).expect("tree");
+        repo.commit(Some("HEAD"), &sig, &sig, "main", &tree, &[&commit])
+            .expect("commit main");
+
+        let conflicts = GitManager::detect_conflicts(dir.path(), "feature").expect("conflicts");
+        assert_eq!(conflicts, vec!["README.md".to_owned()]);
     }
 }

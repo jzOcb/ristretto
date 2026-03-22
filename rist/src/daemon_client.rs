@@ -70,6 +70,9 @@ enum DaemonFrame {
         stderr: String,
         exit_code: i32,
     },
+    WaitStatus {
+        status: AgentStatus,
+    },
     Ok,
     Error {
         message: String,
@@ -266,7 +269,11 @@ impl DaemonClient {
     }
 
     /// Waits for an agent to reach an idle or terminal state.
-    pub async fn wait_for_idle(&self, id: SessionId, timeout_secs: u64) -> io::Result<()> {
+    pub async fn wait_for_idle(
+        &self,
+        id: SessionId,
+        timeout_secs: u64,
+    ) -> io::Result<AgentStatus> {
         match self
             .request(Request::WaitForIdle {
                 id,
@@ -275,7 +282,7 @@ impl DaemonClient {
             })
             .await?
         {
-            Response::Ok => Ok(()),
+            Response::WaitStatus { status } => Ok(status),
             other => unexpected_response("wait_for_idle", other),
         }
     }
@@ -531,6 +538,7 @@ impl DaemonFrame {
                 stderr,
                 exit_code,
             }),
+            Self::WaitStatus { status } => FrameKind::Response(Response::WaitStatus { status }),
             Self::Ok => FrameKind::Response(Response::Ok),
             Self::Error { message } => FrameKind::Response(Response::Error { message }),
             Self::PtyData { id, data } => FrameKind::Event(Event::PtyData { id, data }),

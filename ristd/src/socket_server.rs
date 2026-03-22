@@ -10,6 +10,7 @@ use std::time::Duration;
 use chrono::Utc;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{mpsc, Mutex};
+use tokio::time::sleep;
 
 use rist_shared::protocol::{decode_frame_async, encode_frame_async, Event, Request, Response};
 use rist_shared::{AgentInfo, AgentStatus, AgentType, SessionId, TaskGraph};
@@ -221,8 +222,7 @@ async fn dispatch_request(
             }
         }
         Request::KillAgent { id } => {
-            let mut manager = pty_manager.lock().await;
-            match manager.kill_agent(*id) {
+            match kill_agent_async(pty_manager, *id).await {
                 Ok(()) => Response::Ok,
                 Err(error) => Response::Error {
                     message: error.to_string(),
@@ -248,8 +248,7 @@ async fn dispatch_request(
             }
         }
         Request::ArchiveAgent { id, keep_worktree } => {
-            let mut manager = pty_manager.lock().await;
-            match manager.archive_agent(*id, *keep_worktree) {
+            match archive_agent_async(pty_manager, *id, *keep_worktree).await {
                 Ok(agent_info) => {
                     let mut store = session_store.lock().await;
                     store.update(agent_info);
@@ -270,9 +269,8 @@ async fn dispatch_request(
             timeout_secs,
             settling_secs,
         } => {
-            let mut manager = pty_manager.lock().await;
-            match manager.wait_for_idle(*id, *timeout_secs, *settling_secs) {
-                Ok(_) => Response::Ok,
+            match wait_for_idle_async(pty_manager, *id, *timeout_secs, *settling_secs).await {
+                Ok(status) => Response::WaitStatus { status },
                 Err(error) => Response::Error {
                     message: error.to_string(),
                 },
@@ -398,6 +396,71 @@ async fn dispatch_request(
         Request::Unknown => Response::Error {
             message: "request not implemented".to_owned(),
         },
+    }
+}
+
+async fn kill_agent_async(
+    pty_manager: &Arc<Mutex<PtyManager>>,
+    id: SessionId,
+) -> io::Result<()> {
+    let needs_grace = {
+        let mut manager = pty_manager.lock().await;
+        matches!(
+            manager.request_termination(id)?,
+            crate::pty_manager::TerminationRequest::GracePeriod
+        )
+    };
+    if needs_grace {
+        sleep(Duration::from_secs(2)).await;
+        let mut manager = pty_manager.lock().await;
+        manager.finish_termination(id)?;
+    }
+    Ok(())
+}
+
+async fn archive_agent_async(
+    pty_manager: &Arc<Mutex<PtyManager>>,
+    id: SessionId,
+    keep_worktree: bool,
+) -> io::Result<AgentInfo> {
+    let needs_grace = {
+        let mut manager = pty_manager.lock().await;
+        matches!(
+            manager.request_termination(id)?,
+            crate::pty_manager::TerminationRequest::GracePeriod
+        )
+    };
+    if needs_grace {
+        sleep(Duration::from_secs(1)).await;
+        let mut manager = pty_manager.lock().await;
+        manager.finish_termination(id)?;
+    }
+
+    let mut manager = pty_manager.lock().await;
+    manager.archive_agent(id, keep_worktree)
+}
+
+async fn wait_for_idle_async(
+    pty_manager: &Arc<Mutex<PtyManager>>,
+    id: SessionId,
+    timeout_secs: u64,
+    settling_secs: u64,
+) -> io::Result<AgentStatus> {
+    let timeout = Duration::from_secs(timeout_secs);
+    let settling = Duration::from_secs(settling_secs);
+    let start = std::time::Instant::now();
+
+    loop {
+        let state = {
+            let mut manager = pty_manager.lock().await;
+            manager.idle_check(id, settling)?
+        };
+
+        if state.complete || start.elapsed() >= timeout {
+            return Ok(state.status);
+        }
+
+        sleep(Duration::from_millis(200)).await;
     }
 }
 

@@ -202,14 +202,21 @@ fn parse_reviewer_type(output: &str) -> Option<AgentType> {
 }
 
 fn parse_verdict(output: &str) -> ReviewVerdict {
-    let upper = output.to_ascii_uppercase();
-    if upper.contains("CHANGES REQUESTED") {
-        ReviewVerdict::RequestChanges
-    } else if upper.contains("NEEDS DISCUSSION") {
-        ReviewVerdict::NeedsDiscussion
-    } else {
-        ReviewVerdict::Approved
-    }
+    output
+        .lines()
+        .find_map(|line| {
+            let (prefix, value) = line.split_once(':')?;
+            if !prefix.trim().eq_ignore_ascii_case("verdict") {
+                return None;
+            }
+            match value.trim().to_ascii_uppercase().as_str() {
+                "APPROVED" => Some(ReviewVerdict::Approved),
+                "CHANGES REQUESTED" => Some(ReviewVerdict::RequestChanges),
+                "NEEDS DISCUSSION" => Some(ReviewVerdict::NeedsDiscussion),
+                _ => Some(ReviewVerdict::RequestChanges),
+            }
+        })
+        .unwrap_or(ReviewVerdict::RequestChanges)
 }
 
 fn parse_comment_line(line: &str) -> Option<ReviewComment> {
@@ -316,5 +323,16 @@ SUGGESTED FIX: reset the retry counter after successful output";
 
         assert!(!engine.needs_changes(&nit_only));
         assert!(engine.needs_changes(&blocking));
+    }
+
+    #[test]
+    fn parse_review_output_defaults_garbled_verdict_to_changes_requested() {
+        let engine = ReviewEngine::new();
+
+        let missing = engine.parse_review_output("ERROR: broken edge case");
+        let garbled = engine.parse_review_output("VERDICT: shrug");
+
+        assert_eq!(missing.verdict, ReviewVerdict::RequestChanges);
+        assert_eq!(garbled.verdict, ReviewVerdict::RequestChanges);
     }
 }

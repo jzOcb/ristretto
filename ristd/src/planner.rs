@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 use std::fs;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use chrono::Utc;
 use rist_shared::{SessionId, Task, TaskGraph, TaskStatus};
@@ -44,7 +44,7 @@ impl TaskPlanner {
         if let Some(parent) = self.state_path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let temp_path = self.state_path.with_extension("json.tmp");
+        let temp_path = unique_temp_path(&self.state_path);
         let payload = serde_json::to_vec_pretty(&self.task_graph)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
         let mut file = fs::File::create(&temp_path)?;
@@ -164,6 +164,19 @@ impl TaskPlanner {
             .filter_map(|dep| (!done.contains(dep.as_str())).then_some(dep.as_str()))
             .collect()
     }
+}
+
+fn unique_temp_path(path: &Path) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("task-graph");
+    let unique = format!(
+        ".{file_name}.{}.{}.tmp",
+        std::process::id(),
+        uuid::Uuid::new_v4().simple()
+    );
+    path.with_file_name(unique)
 }
 
 /// Aggregate task-graph statistics.

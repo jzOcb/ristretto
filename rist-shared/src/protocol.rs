@@ -182,6 +182,11 @@ pub enum Response {
         /// Exit code.
         exit_code: i32,
     },
+    /// Result of waiting for an agent to settle.
+    WaitStatus {
+        /// The agent status observed when the wait completed.
+        status: AgentStatus,
+    },
     /// Generic success response.
     Ok,
     /// Error response.

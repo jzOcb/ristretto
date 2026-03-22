@@ -179,7 +179,7 @@ impl AgentAdapter for DefaultAdapter {
         command.args(["-lc"]);
         command.arg(format!(
             "echo No adapter for {}; exec sleep 3600",
-            agent_type_label(&self.agent_type)
+            shell_escape(agent_type_label(&self.agent_type))
         ));
         command.cwd(workdir);
         command
@@ -214,6 +214,15 @@ fn agent_type_label(agent_type: &AgentType) -> &str {
         AgentType::Custom(name) => name,
         AgentType::Unknown => "unknown",
     }
+}
+
+fn shell_escape(value: &str) -> String {
+    if value.is_empty() {
+        return "''".to_owned();
+    }
+
+    let escaped = value.replace('\'', r#"'\''"#);
+    format!("'{escaped}'")
 }
 
 fn detect_status_with_patterns(
