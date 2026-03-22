@@ -514,11 +514,12 @@ impl PtyManager {
             return Ok(());
         }
 
-        let exit_status = if let Some(exit_status) = session.child.try_wait().map_err(io::Error::other)? {
-            exit_status
-        } else {
-            force_terminate_session(session)?
-        };
+        let exit_status =
+            if let Some(exit_status) = session.child.try_wait().map_err(io::Error::other)? {
+                exit_status
+            } else {
+                force_terminate_session(session)?
+            };
 
         self.file_ownership.release(id);
         Self::apply_exit_state(session, &self.pending_events, exit_status);
@@ -529,9 +530,9 @@ impl PtyManager {
     pub fn run_command(&self, id: SessionId, command: &str) -> io::Result<(String, String, i32)> {
         let info = self.agent_info(id)?;
         let argv = split_command_line(command)?;
-        let (program, args) = argv.split_first().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidInput, "command line is empty")
-        })?;
+        let (program, args) = argv
+            .split_first()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "command line is empty"))?;
         let output = Command::new(program)
             .args(args)
             .current_dir(&info.workdir)

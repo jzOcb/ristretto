@@ -154,14 +154,11 @@ impl WebhookTransport {
         }
 
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-        Err(io::Error::new(
-            io::ErrorKind::Other,
-            if stderr.is_empty() {
-                format!("curl exited with status {}", output.status)
-            } else {
-                format!("webhook delivery failed: {stderr}")
-            },
-        ))
+        Err(io::Error::other(if stderr.is_empty() {
+            format!("curl exited with status {}", output.status)
+        } else {
+            format!("webhook delivery failed: {stderr}")
+        }))
     }
 }
 

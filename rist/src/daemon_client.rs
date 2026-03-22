@@ -14,9 +14,7 @@ use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
 use rist_shared::protocol::{
     decode_frame_async, encode_frame_async, Event, Request, Response, MAX_FRAME_BYTES,
 };
-use rist_shared::{
-    AgentInfo, AgentStatus, AgentType, EventFilter, MergeStrategy, SessionId, Task,
-};
+use rist_shared::{AgentInfo, AgentStatus, AgentType, EventFilter, MergeStrategy, SessionId, Task};
 
 /// Daemon-side updates forwarded to the TUI.
 #[derive(Debug, Clone)]

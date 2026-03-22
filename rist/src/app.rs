@@ -289,7 +289,11 @@ impl App {
     }
 
     fn prune_agent_state(&mut self) {
-        let active_ids = self.agents.iter().map(|agent| agent.id).collect::<HashSet<_>>();
+        let active_ids = self
+            .agents
+            .iter()
+            .map(|agent| agent.id)
+            .collect::<HashSet<_>>();
         self.agent_outputs
             .retain(|session_id, _| active_ids.contains(session_id));
         self.output_states

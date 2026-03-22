@@ -221,14 +221,12 @@ async fn dispatch_request(
                 },
             }
         }
-        Request::KillAgent { id } => {
-            match kill_agent_async(pty_manager, *id).await {
-                Ok(()) => Response::Ok,
-                Err(error) => Response::Error {
-                    message: error.to_string(),
-                },
-            }
-        }
+        Request::KillAgent { id } => match kill_agent_async(pty_manager, *id).await {
+            Ok(()) => Response::Ok,
+            Err(error) => Response::Error {
+                message: error.to_string(),
+            },
+        },
         Request::GetOutput { id, lines } => {
             let manager = pty_manager.lock().await;
             match manager.get_output(*id, *lines) {
@@ -268,14 +266,12 @@ async fn dispatch_request(
             id,
             timeout_secs,
             settling_secs,
-        } => {
-            match wait_for_idle_async(pty_manager, *id, *timeout_secs, *settling_secs).await {
-                Ok((status, timed_out)) => Response::WaitStatus { status, timed_out },
-                Err(error) => Response::Error {
-                    message: error.to_string(),
-                },
-            }
-        }
+        } => match wait_for_idle_async(pty_manager, *id, *timeout_secs, *settling_secs).await {
+            Ok((status, timed_out)) => Response::WaitStatus { status, timed_out },
+            Err(error) => Response::Error {
+                message: error.to_string(),
+            },
+        },
         Request::RunCommand { id, command } => {
             let manager = pty_manager.lock().await;
             match manager.run_command(*id, command) {
@@ -399,10 +395,7 @@ async fn dispatch_request(
     }
 }
 
-async fn kill_agent_async(
-    pty_manager: &Arc<Mutex<PtyManager>>,
-    id: SessionId,
-) -> io::Result<()> {
+async fn kill_agent_async(pty_manager: &Arc<Mutex<PtyManager>>, id: SessionId) -> io::Result<()> {
     let needs_grace = {
         let mut manager = pty_manager.lock().await;
         matches!(

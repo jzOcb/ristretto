@@ -423,6 +423,13 @@ pub struct Message {
     pub msg_type: MessageType,
 }
 
+fn validate_task_id(id: &str) -> Result<(), &'static str> {
+    if id.trim().is_empty() {
+        return Err("task id must not be empty");
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -505,11 +512,4 @@ mod tests {
         .expect_err("empty id must fail");
         assert!(error.to_string().contains("task id"));
     }
-}
-
-fn validate_task_id(id: &str) -> Result<(), &'static str> {
-    if id.trim().is_empty() {
-        return Err("task id must not be empty");
-    }
-    Ok(())
 }
