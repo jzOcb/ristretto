@@ -15,6 +15,7 @@ use nix::unistd::Pid;
 use portable_pty::{native_pty_system, Child, MasterPty, PtySize};
 use rist_shared::protocol::Event;
 use rist_shared::{AgentInfo, AgentStatus, AgentType, ContextUsage, MergeStrategy, SessionId};
+use tracing::error;
 
 use crate::agent_adapter::{
     agent_type_key, AgentAdapter, ClaudeCodeAdapter, CodexAdapter, DefaultAdapter, GeminiAdapter,
@@ -55,6 +56,16 @@ struct PtySession {
     last_recovery_issue: Option<String>,
     last_loop_pattern: Option<String>,
     exited: bool,
+}
+
+pub struct IdleCheck {
+    pub status: AgentStatus,
+    pub complete: bool,
+}
+
+pub enum TerminationRequest {
+    Completed,
+    GracePeriod,
 }
 
 /// PTY session manager for active agents.
@@ -227,7 +238,10 @@ impl PtyManager {
                             });
                         }
                     }
-                    Err(_) => break,
+                    Err(error) => {
+                        error!("PTY reader failed for session {id:?}: {error}");
+                        break;
+                    }
                 }
             }
         });
@@ -257,35 +271,8 @@ impl PtyManager {
 
     /// Terminates an agent using `SIGTERM`, then `SIGKILL` after a grace period.
     pub fn kill_agent(&mut self, id: SessionId) -> io::Result<()> {
-        let session = self
-            .sessions
-            .get_mut(&id)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "session not found"))?;
-        if session.exited {
-            return Ok(());
-        }
-
-        let exit_status = if let Some(process_id) = session.child.process_id() {
-            let pid = Pid::from_raw(process_id as i32);
-            kill(pid, Signal::SIGTERM).map_err(io::Error::other)?;
-            thread::sleep(Duration::from_secs(2));
-            if session
-                .child
-                .try_wait()
-                .map_err(io::Error::other)?
-                .is_none()
-            {
-                kill(pid, Signal::SIGKILL).map_err(io::Error::other)?;
-            }
-            session.child.wait().map_err(io::Error::other)?
-        } else {
-            session.child.kill().map_err(io::Error::other)?;
-            session.child.wait().map_err(io::Error::other)?
-        };
-
-        self.file_ownership.release(id);
-        Self::apply_exit_state(session, &self.pending_events, exit_status);
-        Ok(())
+        let _ = self.request_termination(id)?;
+        self.finish_termination(id)
     }
 
     /// Polls all child processes and updates in-memory status/exit metadata.
@@ -393,23 +380,7 @@ impl PtyManager {
     pub fn archive_agent(&mut self, id: SessionId, keep_worktree: bool) -> io::Result<AgentInfo> {
         let mut info = if let Some(mut session) = self.sessions.remove(&id) {
             if !session.exited {
-                let exit_status = if let Some(process_id) = session.child.process_id() {
-                    let pid = Pid::from_raw(process_id as i32);
-                    let _ = kill(pid, Signal::SIGTERM);
-                    thread::sleep(Duration::from_secs(1));
-                    if session
-                        .child
-                        .try_wait()
-                        .map_err(io::Error::other)?
-                        .is_none()
-                    {
-                        let _ = kill(pid, Signal::SIGKILL);
-                    }
-                    session.child.wait().map_err(io::Error::other)?
-                } else {
-                    session.child.kill().map_err(io::Error::other)?;
-                    session.child.wait().map_err(io::Error::other)?
-                };
+                let exit_status = force_terminate_session(&mut session)?;
                 Self::apply_exit_state(&mut session, &self.pending_events, exit_status);
             }
             session.info
@@ -463,46 +434,106 @@ impl PtyManager {
     }
 
     /// Waits until the session reaches an idle terminal state.
-    pub fn wait_for_idle(
+    pub async fn wait_for_idle(
         &mut self,
         id: SessionId,
         timeout_secs: u64,
         settling_secs: u64,
-    ) -> io::Result<(AgentStatus, bool)> {
+    ) -> io::Result<AgentStatus> {
         let timeout = Duration::from_secs(timeout_secs);
         let settling = Duration::from_secs(settling_secs);
         let start = std::time::Instant::now();
 
         loop {
-            self.check_exits();
-            let info = self.agent_info(id)?.clone();
-            let settled = info
-                .last_output_at
-                .and_then(|last_output| (Utc::now() - last_output).to_std().ok())
-                .is_some_and(|elapsed| elapsed >= settling);
-
-            match info.status {
-                AgentStatus::Idle if settled => return Ok((AgentStatus::Idle, false)),
-                AgentStatus::Done | AgentStatus::Error | AgentStatus::Stuck => {
-                    return Ok((info.status, false))
-                }
-                AgentStatus::Waiting if settled => return Ok((AgentStatus::Waiting, false)),
-                _ => {}
+            let state = self.idle_check(id, settling)?;
+            if state.complete {
+                return Ok(state.status);
             }
 
             if start.elapsed() >= timeout {
-                return Ok((info.status, true));
+                return Ok(state.status);
             }
 
-            thread::sleep(Duration::from_millis(200));
+            tokio::time::sleep(Duration::from_millis(200)).await;
         }
+    }
+
+    pub fn idle_check(&mut self, id: SessionId, settling: Duration) -> io::Result<IdleCheck> {
+        self.check_exits();
+        let info = self.agent_info(id)?.clone();
+        let settled = info
+            .last_output_at
+            .and_then(|last_output| (Utc::now() - last_output).to_std().ok())
+            .is_some_and(|elapsed| elapsed >= settling);
+
+        let complete = match info.status {
+            AgentStatus::Idle | AgentStatus::Waiting => settled,
+            AgentStatus::Done | AgentStatus::Error | AgentStatus::Stuck => true,
+            _ => false,
+        };
+
+        Ok(IdleCheck {
+            status: info.status,
+            complete,
+        })
+    }
+
+    pub fn request_termination(&mut self, id: SessionId) -> io::Result<TerminationRequest> {
+        let session = self
+            .sessions
+            .get_mut(&id)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "session not found"))?;
+        if session.exited {
+            return Ok(TerminationRequest::Completed);
+        }
+
+        if let Some(process_id) = session.child.process_id() {
+            let pid = Pid::from_raw(process_id as i32);
+            kill(pid, Signal::SIGTERM).map_err(io::Error::other)?;
+            if let Some(exit_status) = session.child.try_wait().map_err(io::Error::other)? {
+                self.file_ownership.release(id);
+                Self::apply_exit_state(session, &self.pending_events, exit_status);
+                return Ok(TerminationRequest::Completed);
+            }
+            Ok(TerminationRequest::GracePeriod)
+        } else {
+            let exit_status = force_terminate_session(session)?;
+            self.file_ownership.release(id);
+            Self::apply_exit_state(session, &self.pending_events, exit_status);
+            Ok(TerminationRequest::Completed)
+        }
+    }
+
+    pub fn finish_termination(&mut self, id: SessionId) -> io::Result<()> {
+        let session = self
+            .sessions
+            .get_mut(&id)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "session not found"))?;
+        if session.exited {
+            self.file_ownership.release(id);
+            return Ok(());
+        }
+
+        let exit_status = if let Some(exit_status) = session.child.try_wait().map_err(io::Error::other)? {
+            exit_status
+        } else {
+            force_terminate_session(session)?
+        };
+
+        self.file_ownership.release(id);
+        Self::apply_exit_state(session, &self.pending_events, exit_status);
+        Ok(())
     }
 
     /// Runs `command` inside the agent worktree and captures its output.
     pub fn run_command(&self, id: SessionId, command: &str) -> io::Result<(String, String, i32)> {
         let info = self.agent_info(id)?;
-        let output = Command::new("sh")
-            .args(["-lc", command])
+        let argv = split_command_line(command)?;
+        let (program, args) = argv.split_first().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "command line is empty")
+        })?;
+        let output = Command::new(program)
+            .args(args)
             .current_dir(&info.workdir)
             .output()?;
         let exit_code = output.status.code().unwrap_or_default();
@@ -528,11 +559,16 @@ impl PtyManager {
                 continue;
             }
 
-            let total_output_bytes = session
-                .telemetry
-                .lock()
-                .map(|telemetry| telemetry.total_output_bytes)
-                .unwrap_or_default();
+            let total_output_bytes = match session.telemetry.lock() {
+                Ok(telemetry) => telemetry.total_output_bytes,
+                Err(error) => {
+                    error!(
+                        "telemetry mutex poisoned during health check for session {:?}: {}",
+                        session.info.id, error
+                    );
+                    continue;
+                }
+            };
             if total_output_bytes > session.last_observed_output_bytes {
                 session.last_observed_output_bytes = total_output_bytes;
                 session.idle_nudged = false;
@@ -540,11 +576,16 @@ impl PtyManager {
                 session.last_recovery_issue = None;
             }
 
-            let buffer_snapshot = session
-                .ring_buffer
-                .lock()
-                .map(|buffer| buffer.snapshot())
-                .unwrap_or_default();
+            let buffer_snapshot = match session.ring_buffer.lock() {
+                Ok(buffer) => buffer.snapshot(),
+                Err(error) => {
+                    error!(
+                        "ring buffer mutex poisoned during health check for session {:?}: {}",
+                        session.info.id, error
+                    );
+                    continue;
+                }
+            };
             let usage_pct = context_monitor.estimate_usage(&session.info, &buffer_snapshot);
             session.info.context_usage = Some(ContextUsage {
                 estimated_tokens: u64::try_from(total_output_bytes / 4).unwrap_or(u64::MAX),
@@ -566,11 +607,16 @@ impl PtyManager {
                 session.context_warning_sent = false;
             }
 
-            let recent_output = session
-                .telemetry
-                .lock()
-                .map(|telemetry| telemetry.recent_lines.iter().cloned().collect::<Vec<_>>())
-                .unwrap_or_default();
+            let recent_output = match session.telemetry.lock() {
+                Ok(telemetry) => telemetry.recent_lines.iter().cloned().collect::<Vec<_>>(),
+                Err(error) => {
+                    error!(
+                        "telemetry mutex poisoned when sampling recent output for session {:?}: {}",
+                        session.info.id, error
+                    );
+                    continue;
+                }
+            };
             let loop_pattern = adapters
                 .get(&session.adapter_key)
                 .and_then(|adapter| adapter.detect_loop(&buffer_snapshot));
@@ -781,8 +827,14 @@ struct RepositoryRoot {
 impl RepositoryRoot {
     fn discover(path: &Path) -> io::Result<Self> {
         let repo = git2::Repository::discover(path).map_err(io::Error::other)?;
+        let workdir = repo.workdir().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("bare repositories are not supported: {}", path.display()),
+            )
+        })?;
         Ok(Self {
-            path: repo.workdir().unwrap_or(path).to_path_buf(),
+            path: workdir.to_path_buf(),
         })
     }
 }
@@ -852,6 +904,61 @@ fn push_event(pending_events: &Arc<Mutex<VecDeque<Event>>>, event: Event) {
     if let Ok(mut events) = pending_events.lock() {
         events.push_back(event);
     }
+}
+
+fn split_command_line(command: &str) -> io::Result<Vec<String>> {
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut quote = None;
+    let mut chars = command.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\\' => {
+                let next = chars.next().ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "unterminated escape sequence")
+                })?;
+                current.push(next);
+            }
+            '\'' | '"' => {
+                if quote == Some(ch) {
+                    quote = None;
+                } else if quote.is_none() {
+                    quote = Some(ch);
+                } else {
+                    current.push(ch);
+                }
+            }
+            ch if ch.is_whitespace() && quote.is_none() => {
+                if !current.is_empty() {
+                    args.push(std::mem::take(&mut current));
+                }
+            }
+            _ => current.push(ch),
+        }
+    }
+
+    if quote.is_some() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "unterminated quoted string",
+        ));
+    }
+    if !current.is_empty() {
+        args.push(current);
+    }
+
+    Ok(args)
+}
+
+fn force_terminate_session(session: &mut PtySession) -> io::Result<portable_pty::ExitStatus> {
+    if let Some(process_id) = session.child.process_id() {
+        let pid = Pid::from_raw(process_id as i32);
+        let _ = kill(pid, Signal::SIGKILL);
+    } else {
+        session.child.kill().map_err(io::Error::other)?;
+    }
+    session.child.wait().map_err(io::Error::other)
 }
 
 fn ristretto_shared_dir() -> PathBuf {

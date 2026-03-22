@@ -514,7 +514,7 @@ mod tests {
 
     #[test]
     fn decode_frame_rejects_oversized_payload() {
-        let mut bytes = Cursor::new((MAX_FRAME_BYTES as u32 + 1).to_be_bytes().to_vec());
+        let mut bytes = Cursor::new((super::MAX_FRAME_BYTES as u32 + 1).to_be_bytes().to_vec());
         let error = decode_frame::<Response>(&mut bytes).expect_err("oversized frame must fail");
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     }

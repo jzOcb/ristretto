@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionStore {
     sessions: Vec<AgentInfo>,
+    #[serde(skip)]
     path: PathBuf,
 }
 
@@ -44,7 +45,7 @@ impl SessionStore {
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let temp_path = self.path.with_extension("json.tmp");
+        let temp_path = unique_temp_path(&self.path);
         let payload = serde_json::to_vec_pretty(&self.sessions)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
         let mut file = fs::File::create(&temp_path)?;
@@ -82,4 +83,17 @@ impl SessionStore {
     pub fn sessions(&self) -> &[AgentInfo] {
         &self.sessions
     }
+}
+
+fn unique_temp_path(path: &Path) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("session-store");
+    let unique = format!(
+        ".{file_name}.{}.{}.tmp",
+        std::process::id(),
+        uuid::Uuid::new_v4().simple()
+    );
+    path.with_file_name(unique)
 }
