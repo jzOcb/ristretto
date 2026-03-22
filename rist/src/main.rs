@@ -99,7 +99,7 @@ async fn main() -> io::Result<()> {
 
     let mut agent_tick = tokio::time::interval(Duration::from_secs(1));
     agent_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    let mut output_tick = tokio::time::interval(Duration::from_millis(500));
+    let mut output_tick = tokio::time::interval(Duration::from_secs(2));
     output_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
     while app.running {

@@ -6,12 +6,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use serde_json::Value;
+use serde::Deserialize;
 use tokio::net::UnixStream;
+use tokio::io::AsyncReadExt;
 use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
 
 use rist_shared::protocol::{decode_frame_async, encode_frame_async, Event, Request, Response};
-use rist_shared::{AgentInfo, AgentType, EventFilter, SessionId};
+use rist_shared::{AgentInfo, AgentStatus, AgentType, EventFilter, SessionId, Task, TaskStatus};
 
 /// Daemon-side updates forwarded to the TUI.
 #[derive(Debug, Clone)]
@@ -31,6 +32,40 @@ enum Command {
         respond_to: oneshot::Sender<io::Result<Response>>,
     },
     Disconnect,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum DaemonFrame {
+    Pong { version: String },
+    AgentSpawned { id: SessionId },
+    AgentList { agents: Vec<AgentInfo> },
+    Output { lines: Vec<String> },
+    TaskGraph { tasks: Vec<Task> },
+    FileOwnership {
+        map: std::collections::HashMap<std::path::PathBuf, SessionId>,
+    },
+    MergePreview { diff: String, conflicts: Vec<String> },
+    MergeResult { success: bool, message: String },
+    CommandOutput {
+        stdout: String,
+        stderr: String,
+        exit_code: i32,
+    },
+    Ok,
+    Error { message: String },
+    PtyData { id: SessionId, data: Vec<u8> },
+    StatusChange {
+        id: SessionId,
+        old: AgentStatus,
+        new: AgentStatus,
+    },
+    AgentExited { id: SessionId, exit_code: i32 },
+    TaskUpdate { task_id: String, status: TaskStatus },
+    ContextWarning { id: SessionId, usage_pct: f64 },
+    LoopDetected { id: SessionId, pattern: String },
+    #[serde(other)]
+    Unknown,
 }
 
 /// Handle used by the TUI to talk to the daemon.
@@ -268,24 +303,16 @@ async fn run_connected_loop(
                     }
                 }
             }
-            frame = decode_frame_async::<_, Value>(&mut reader) => {
+            frame = decode_daemon_frame(&mut reader) => {
                 match frame {
                     Ok(frame) => {
-                        if is_response_frame(&frame) {
-                            let response: Response = match serde_json::from_value(frame) {
-                                Ok(response) => response,
-                                Err(error) => {
-                                    let io_error = io::Error::new(io::ErrorKind::InvalidData, error);
-                                    let _ = events_tx.send(ClientEvent::Disconnected(io_error.to_string()));
-                                    fail_all_pending(&pending, io_error).await;
-                                    return true;
+                        match frame {
+                            FrameKind::Response(response) => {
+                                if let Some(sender) = pending.lock().await.pop_front() {
+                                    let _ = sender.send(response_to_result(response));
                                 }
-                            };
-                            if let Some(sender) = pending.lock().await.pop_front() {
-                                let _ = sender.send(response_to_result(response));
                             }
-                        } else if is_event_frame(&frame) {
-                            if let Ok(event) = serde_json::from_value::<Event>(frame) {
+                            FrameKind::Event(event) => {
                                 let _ = events_tx.send(ClientEvent::Daemon(event));
                             }
                         }
@@ -297,6 +324,73 @@ async fn run_connected_loop(
                     }
                 }
             }
+        }
+    }
+}
+
+enum FrameKind {
+    Response(Response),
+    Event(Event),
+}
+
+async fn decode_daemon_frame<R>(reader: &mut R) -> io::Result<FrameKind>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let mut len_buf = [0_u8; 4];
+    reader.read_exact(&mut len_buf).await?;
+    let length = usize::try_from(u32::from_be_bytes(len_buf))
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    let mut payload = vec![0_u8; length];
+    reader.read_exact(&mut payload).await?;
+    let frame: DaemonFrame = serde_json::from_slice(&payload)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    Ok(frame.into_kind())
+}
+
+impl DaemonFrame {
+    fn into_kind(self) -> FrameKind {
+        match self {
+            Self::Pong { version } => FrameKind::Response(Response::Pong { version }),
+            Self::AgentSpawned { id } => FrameKind::Response(Response::AgentSpawned { id }),
+            Self::AgentList { agents } => FrameKind::Response(Response::AgentList { agents }),
+            Self::Output { lines } => FrameKind::Response(Response::Output { lines }),
+            Self::TaskGraph { tasks } => FrameKind::Response(Response::TaskGraph { tasks }),
+            Self::FileOwnership { map } => FrameKind::Response(Response::FileOwnership { map }),
+            Self::MergePreview { diff, conflicts } => {
+                FrameKind::Response(Response::MergePreview { diff, conflicts })
+            }
+            Self::MergeResult { success, message } => {
+                FrameKind::Response(Response::MergeResult { success, message })
+            }
+            Self::CommandOutput {
+                stdout,
+                stderr,
+                exit_code,
+            } => FrameKind::Response(Response::CommandOutput {
+                stdout,
+                stderr,
+                exit_code,
+            }),
+            Self::Ok => FrameKind::Response(Response::Ok),
+            Self::Error { message } => FrameKind::Response(Response::Error { message }),
+            Self::PtyData { id, data } => FrameKind::Event(Event::PtyData { id, data }),
+            Self::StatusChange { id, old, new } => {
+                FrameKind::Event(Event::StatusChange { id, old, new })
+            }
+            Self::AgentExited { id, exit_code } => {
+                FrameKind::Event(Event::AgentExited { id, exit_code })
+            }
+            Self::TaskUpdate { task_id, status } => {
+                FrameKind::Event(Event::TaskUpdate { task_id, status })
+            }
+            Self::ContextWarning { id, usage_pct } => {
+                FrameKind::Event(Event::ContextWarning { id, usage_pct })
+            }
+            Self::LoopDetected { id, pattern } => {
+                FrameKind::Event(Event::LoopDetected { id, pattern })
+            }
+            Self::Unknown => FrameKind::Response(Response::Unknown),
         }
     }
 }
@@ -320,47 +414,6 @@ async fn fail_all_pending(
     while let Some(sender) = pending.pop_front() {
         let _ = sender.send(Err(io::Error::new(error.kind(), error.to_string())));
     }
-}
-
-fn is_response_frame(frame: &Value) -> bool {
-    frame
-        .get("type")
-        .and_then(Value::as_str)
-        .is_some_and(|kind| {
-            matches!(
-                kind,
-                "pong"
-                    | "agent_spawned"
-                    | "agent_list"
-                    | "output"
-                    | "task_graph"
-                    | "file_ownership"
-                    | "merge_preview"
-                    | "merge_result"
-                    | "command_output"
-                    | "ok"
-                    | "error"
-                    | "unknown"
-            )
-        })
-}
-
-fn is_event_frame(frame: &Value) -> bool {
-    frame
-        .get("type")
-        .and_then(Value::as_str)
-        .is_some_and(|kind| {
-            matches!(
-                kind,
-                "pty_data"
-                    | "status_change"
-                    | "agent_exited"
-                    | "task_update"
-                    | "context_warning"
-                    | "loop_detected"
-                    | "unknown"
-            )
-        })
 }
 
 fn response_to_result(response: Response) -> io::Result<Response> {

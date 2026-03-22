@@ -5,6 +5,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{mpsc, Mutex};
@@ -53,6 +54,17 @@ impl SocketServer {
 
     /// Runs the accept loop until the task is cancelled.
     pub async fn run(self) -> io::Result<()> {
+        let sync_pty_manager = Arc::clone(&self.pty_manager);
+        let sync_session_store = Arc::clone(&self.session_store);
+        let sync_clients = Arc::clone(&self.clients);
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_millis(200));
+            loop {
+                tick.tick().await;
+                let _ = sync_agent_state(&sync_pty_manager, &sync_session_store, &sync_clients).await;
+            }
+        });
+
         loop {
             let (stream, _) = self.listener.accept().await?;
             let client_id = self.next_client_id.fetch_add(1, Ordering::Relaxed);
@@ -146,14 +158,11 @@ async fn dispatch_request(
             repo_path,
             file_ownership,
         } => {
-            let workdir = repo_path
-                .clone()
-                .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
             let mut manager = pty_manager.lock().await;
             match manager.spawn_agent(
                 agent_type.clone(),
                 task.clone(),
-                workdir,
+                repo_path.clone(),
                 file_ownership.clone(),
             ) {
                 Ok(id) => {
@@ -226,8 +235,70 @@ async fn dispatch_request(
                 },
             }
         }
-        _ => Response::Error {
-            message: "request not implemented in Phase 1A".to_owned(),
+        Request::Subscribe { .. } => Response::Ok,
+        Request::GetFileOwnership => {
+            let manager = pty_manager.lock().await;
+            Response::FileOwnership {
+                map: manager.ownership_map().clone(),
+            }
+        }
+        Request::MergeAgent {
+            id,
+            preview_only,
+            strategy,
+        } => {
+            let manager = pty_manager.lock().await;
+            if *preview_only {
+                match manager.preview_merge(*id) {
+                    Ok(preview) => Response::MergePreview {
+                        diff: preview.diff,
+                        conflicts: preview.conflicts,
+                    },
+                    Err(error) => Response::Error {
+                        message: error.to_string(),
+                    },
+                }
+            } else {
+                match manager.merge_agent(
+                    *id,
+                    strategy.clone(),
+                    &format!("Squash merge agent {id:?}"),
+                ) {
+                    Ok(result) => Response::MergeResult {
+                        success: result.success,
+                        message: result.message,
+                    },
+                    Err(error) => Response::Error {
+                        message: error.to_string(),
+                    },
+                }
+            }
+        }
+        Request::ArchiveAgent { id, keep_worktree } => {
+            let mut manager = pty_manager.lock().await;
+            match manager.archive_agent(*id, *keep_worktree) {
+                Ok(agent_info) => {
+                    let mut store = session_store.lock().await;
+                    store.update(agent_info);
+                    if let Err(error) = store.save() {
+                        return Response::Error {
+                            message: error.to_string(),
+                        };
+                    }
+                    Response::Ok
+                }
+                Err(error) => Response::Error {
+                    message: error.to_string(),
+                },
+            }
+        }
+        Request::WaitForIdle { .. }
+        | Request::RunCommand { .. }
+        | Request::ReadTaskGraph
+        | Request::WriteTaskGraph { .. }
+        | Request::RequestReview { .. }
+        | Request::Unknown => Response::Error {
+            message: "request not implemented in Phase 2A".to_owned(),
         },
     }
 }
