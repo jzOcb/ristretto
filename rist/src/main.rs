@@ -18,6 +18,8 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use rist::daemon_client::DaemonClient;
 use rist_shared::i18n::tr;
+use tokio::runtime::Builder;
+use tokio::sync::broadcast::error::RecvError;
 use tokio::time::MissedTickBehavior;
 
 /// Command line arguments for the Ristretto TUI.
@@ -33,10 +35,13 @@ struct Args {
 }
 
 fn ristretto_dir() -> PathBuf {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".ristretto")
+    match std::env::var_os("HOME") {
+        Some(home) => PathBuf::from(home).join(".ristretto"),
+        None => {
+            eprintln!("warning: HOME is unset; falling back to ./.ristretto");
+            PathBuf::from(".").join(".ristretto")
+        }
+    }
 }
 
 fn restore_terminal() {
@@ -60,13 +65,20 @@ fn init_terminal() -> io::Result<Terminal<CrosstermBackend<io::Stdout>>> {
     Terminal::new(CrosstermBackend::new(stdout))
 }
 
-#[tokio::main]
-async fn main() -> io::Result<()> {
+fn main() -> io::Result<()> {
     let args = Args::parse();
     if let Some(lang) = &args.lang {
         std::env::set_var("RISTRETTO_LANG", lang);
     }
+    install_panic_hook();
 
+    Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(run(args))
+}
+
+async fn run(args: Args) -> io::Result<()> {
     let socket_path = args
         .socket
         .unwrap_or_else(|| ristretto_dir().join("daemon.sock"));
@@ -83,7 +95,6 @@ async fn main() -> io::Result<()> {
         return Ok(());
     }
 
-    install_panic_hook();
     let mut terminal = init_terminal()?;
     let mut event_rx = event::spawn_terminal_events();
     let mut client_events = client.subscribe();
@@ -110,8 +121,21 @@ async fn main() -> io::Result<()> {
                     break;
                 }
             }
-            Ok(client_event) = client_events.recv() => {
-                app.apply_client_event(client_event);
+            client_event = client_events.recv() => {
+                match client_event {
+                    Ok(client_event) => app.apply_client_event(client_event),
+                    Err(RecvError::Lagged(skipped)) => {
+                        let message = format!("daemon event stream lagged by {skipped} messages");
+                        eprintln!("{message}");
+                        app.set_status_message(message);
+                    }
+                    Err(RecvError::Closed) => {
+                        let message = "daemon event stream closed".to_owned();
+                        eprintln!("{message}");
+                        app.set_status_message(message);
+                        app.running = false;
+                    }
+                }
             }
             _ = agent_tick.tick() => {
                 match client.list_agents().await {

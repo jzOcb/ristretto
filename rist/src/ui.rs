@@ -85,17 +85,12 @@ fn render_main_panels(frame: &mut Frame<'_>, area: Rect, app: &App) {
 }
 
 fn render_output_panel(frame: &mut Frame<'_>, area: Rect, title: &str, output: Option<&[String]>) {
+    let output = output.unwrap_or(&[]);
     let height = area.height.saturating_sub(2) as usize;
-    let lines = output
-        .unwrap_or(&[])
+    let start = output.len().saturating_sub(height);
+    let lines = output[start..]
         .iter()
-        .rev()
-        .take(height)
-        .cloned()
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .map(Line::from)
+        .map(|line| Line::from(line.as_str()))
         .collect::<Vec<_>>();
 
     let widget = Paragraph::new(lines)
@@ -154,7 +149,7 @@ fn render_help_overlay(frame: &mut Frame<'_>, app: &App) {
     let height = 11;
     let area = centered_rect(width, height, frame.area());
     let lines = vec![
-        Line::from("N  spawn agent (placeholder)"),
+        Line::from("N  spawn a Codex agent"),
         Line::from("K  kill focused agent"),
         Line::from("1-9 / Tab  change focus"),
         Line::from("D  toggle split layout"),
