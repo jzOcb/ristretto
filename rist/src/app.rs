@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use rist_shared::protocol::Event;
 use rist_shared::{AgentInfo, AgentStatus, SessionId};
 
-use crate::daemon_client::{ClientEvent, DaemonClient};
+use rist::daemon_client::{ClientEvent, DaemonClient};
 
 /// Top-level application state for the TUI.
 pub struct App {

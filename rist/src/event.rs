@@ -7,7 +7,7 @@ use crossterm::event::{self, Event as CrosstermEvent, KeyCode, KeyEvent, KeyModi
 use tokio::sync::mpsc::{self, UnboundedReceiver};
 
 use crate::app::{App, InputMode};
-use crate::daemon_client::DaemonClient;
+use rist::daemon_client::DaemonClient;
 
 /// Terminal events consumed by the main TUI loop.
 #[derive(Debug, Clone, Copy)]

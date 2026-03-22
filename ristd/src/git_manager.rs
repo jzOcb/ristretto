@@ -123,9 +123,14 @@ impl GitManager {
     /// Returns a diff and summary for merging `branch` into the current branch.
     pub fn preview_merge(repo_path: &Path, branch: &str) -> io::Result<MergePreview> {
         let repo = open_repo(repo_path)?;
-        let diff = run_git_capture(repo.workdir().unwrap_or(repo_path), ["diff", "HEAD", branch])?;
-        let stats =
-            run_git_capture(repo.workdir().unwrap_or(repo_path), ["diff", "--shortstat", "HEAD", branch])?;
+        let diff = run_git_capture(
+            repo.workdir().unwrap_or(repo_path),
+            ["diff", "HEAD", branch],
+        )?;
+        let stats = run_git_capture(
+            repo.workdir().unwrap_or(repo_path),
+            ["diff", "--shortstat", "HEAD", branch],
+        )?;
         let conflicts = Self::detect_conflicts(repo_path, branch)?;
         let (files_changed, insertions, deletions) = parse_shortstat(&stats);
 
@@ -173,20 +178,20 @@ impl GitManager {
         let repo = open_repo(repo_path)?;
         let workdir = repo.workdir().unwrap_or(repo_path);
         let base = run_git_capture(workdir, ["merge-base", "HEAD", branch])?;
-        let output = run_git_capture(
-            workdir,
-            ["merge-tree", base.trim(), "HEAD", branch],
-        )?;
+        let output = run_git_capture(workdir, ["merge-tree", base.trim(), "HEAD", branch])?;
 
         Ok(output
             .lines()
-            .filter_map(|line| line.strip_prefix("changed in both\n").map(|_| String::new()))
+            .filter_map(|line| {
+                line.strip_prefix("changed in both\n")
+                    .map(|_| String::new())
+            })
             .collect::<Vec<_>>()
             .into_iter()
             .chain(output.lines().filter_map(|line| {
-                line.strip_prefix("  our ").map(ToOwned::to_owned).or_else(|| {
-                    line.strip_prefix("  their ").map(ToOwned::to_owned)
-                })
+                line.strip_prefix("  our ")
+                    .map(ToOwned::to_owned)
+                    .or_else(|| line.strip_prefix("  their ").map(ToOwned::to_owned))
             }))
             .collect())
     }

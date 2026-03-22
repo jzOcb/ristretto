@@ -4,6 +4,7 @@ use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -415,6 +416,57 @@ impl PtyManager {
         GitManager::squash_merge(&repo_path, branch, message)
     }
 
+    /// Waits until the session reaches an idle terminal state.
+    pub fn wait_for_idle(
+        &mut self,
+        id: SessionId,
+        timeout_secs: u64,
+        settling_secs: u64,
+    ) -> io::Result<AgentStatus> {
+        let timeout = Duration::from_secs(timeout_secs);
+        let settling = Duration::from_secs(settling_secs);
+        let start = std::time::Instant::now();
+
+        loop {
+            self.check_exits();
+            let info = self.agent_info(id)?.clone();
+            let settled = info
+                .last_output_at
+                .and_then(|last_output| (Utc::now() - last_output).to_std().ok())
+                .is_some_and(|elapsed| elapsed >= settling);
+
+            match info.status {
+                AgentStatus::Idle if settled => return Ok(AgentStatus::Idle),
+                AgentStatus::Done | AgentStatus::Error | AgentStatus::Stuck => {
+                    return Ok(info.status)
+                }
+                AgentStatus::Waiting if settled => return Ok(AgentStatus::Waiting),
+                _ => {}
+            }
+
+            if start.elapsed() >= timeout {
+                return Ok(info.status);
+            }
+
+            thread::sleep(Duration::from_millis(200));
+        }
+    }
+
+    /// Runs `command` inside the agent worktree and captures its output.
+    pub fn run_command(&self, id: SessionId, command: &str) -> io::Result<(String, String, i32)> {
+        let info = self.agent_info(id)?;
+        let output = Command::new("sh")
+            .args(["-lc", command])
+            .current_dir(&info.workdir)
+            .output()?;
+        let exit_code = output.status.code().unwrap_or_default();
+        Ok((
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+            exit_code,
+        ))
+    }
+
     fn refresh_runtime_state(
         session: &mut PtySession,
         adapters: &HashMap<String, Box<dyn AgentAdapter>>,
@@ -532,10 +584,7 @@ impl RepositoryRoot {
     fn discover(path: &Path) -> io::Result<Self> {
         let repo = git2::Repository::discover(path).map_err(io::Error::other)?;
         Ok(Self {
-            path: repo
-                .workdir()
-                .unwrap_or(path)
-                .to_path_buf(),
+            path: repo.workdir().unwrap_or(path).to_path_buf(),
         })
     }
 }

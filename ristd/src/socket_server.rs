@@ -7,12 +7,14 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use chrono::Utc;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{mpsc, Mutex};
 
 use rist_shared::protocol::{decode_frame_async, encode_frame_async, Event, Request, Response};
-use rist_shared::{AgentInfo, AgentStatus, AgentType, SessionId};
+use rist_shared::{AgentInfo, AgentStatus, AgentType, SessionId, TaskGraph};
 
+use crate::planner::TaskPlanner;
 use crate::pty_manager::PtyManager;
 use crate::session_store::SessionStore;
 
@@ -26,6 +28,7 @@ pub struct SocketServer {
     listener: UnixListener,
     pty_manager: Arc<Mutex<PtyManager>>,
     session_store: Arc<Mutex<SessionStore>>,
+    planner: Arc<Mutex<TaskPlanner>>,
     clients: Arc<Mutex<HashMap<usize, mpsc::UnboundedSender<ServerFrame>>>>,
     next_client_id: AtomicUsize,
 }
@@ -36,12 +39,14 @@ impl SocketServer {
         path: &Path,
         pty_manager: Arc<Mutex<PtyManager>>,
         session_store: Arc<Mutex<SessionStore>>,
+        planner: Arc<Mutex<TaskPlanner>>,
     ) -> io::Result<Self> {
         let listener = UnixListener::bind(path)?;
         Ok(Self {
             listener,
             pty_manager,
             session_store,
+            planner,
             clients: Arc::new(Mutex::new(HashMap::new())),
             next_client_id: AtomicUsize::new(1),
         })
@@ -61,7 +66,8 @@ impl SocketServer {
             let mut tick = tokio::time::interval(Duration::from_millis(200));
             loop {
                 tick.tick().await;
-                let _ = sync_agent_state(&sync_pty_manager, &sync_session_store, &sync_clients).await;
+                let _ =
+                    sync_agent_state(&sync_pty_manager, &sync_session_store, &sync_clients).await;
             }
         });
 
@@ -73,11 +79,19 @@ impl SocketServer {
 
             let pty_manager = Arc::clone(&self.pty_manager);
             let session_store = Arc::clone(&self.session_store);
+            let planner = Arc::clone(&self.planner);
             let clients = Arc::clone(&self.clients);
             tokio::spawn(async move {
-                let _ =
-                    handle_connection(client_id, stream, rx, pty_manager, session_store, clients)
-                        .await;
+                let _ = handle_connection(
+                    client_id,
+                    stream,
+                    rx,
+                    pty_manager,
+                    session_store,
+                    planner,
+                    clients,
+                )
+                .await;
             });
         }
     }
@@ -89,6 +103,7 @@ async fn handle_connection(
     mut rx: mpsc::UnboundedReceiver<ServerFrame>,
     pty_manager: Arc<Mutex<PtyManager>>,
     session_store: Arc<Mutex<SessionStore>>,
+    planner: Arc<Mutex<TaskPlanner>>,
     clients: Arc<Mutex<HashMap<usize, mpsc::UnboundedSender<ServerFrame>>>>,
 ) -> io::Result<()> {
     let (mut reader, mut writer) = stream.into_split();
@@ -112,7 +127,7 @@ async fn handle_connection(
             Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => break,
             Err(error) => return Err(error),
         };
-        let response = dispatch_request(&request, &pty_manager, &session_store).await;
+        let response = dispatch_request(&request, &pty_manager, &session_store, &planner).await;
         send_response(&clients, client_id, response.clone()).await;
 
         if let Request::SpawnAgent { .. } = request {
@@ -141,6 +156,7 @@ async fn dispatch_request(
     request: &Request,
     pty_manager: &Arc<Mutex<PtyManager>>,
     session_store: &Arc<Mutex<SessionStore>>,
+    planner: &Arc<Mutex<TaskPlanner>>,
 ) -> Response {
     match request {
         Request::Ping => Response::Pong {
@@ -212,30 +228,68 @@ async fn dispatch_request(
                 },
             }
         }
-        Request::GetBuffer { id } => {
+        Request::ArchiveAgent { id, keep_worktree } => {
+            let mut manager = pty_manager.lock().await;
+            match manager.archive_agent(*id, *keep_worktree) {
+                Ok(agent_info) => {
+                    let mut store = session_store.lock().await;
+                    store.update(agent_info);
+                    if let Err(error) = store.save() {
+                        return Response::Error {
+                            message: error.to_string(),
+                        };
+                    }
+                    Response::Ok
+                }
+                Err(error) => Response::Error {
+                    message: error.to_string(),
+                },
+            }
+        }
+        Request::WaitForIdle {
+            id,
+            timeout_secs,
+            settling_secs,
+        } => {
+            let mut manager = pty_manager.lock().await;
+            match manager.wait_for_idle(*id, *timeout_secs, *settling_secs) {
+                Ok(_) => Response::Ok,
+                Err(error) => Response::Error {
+                    message: error.to_string(),
+                },
+            }
+        }
+        Request::RunCommand { id, command } => {
             let manager = pty_manager.lock().await;
-            match manager.get_buffer(*id) {
-                Ok(bytes) => Response::Output {
-                    lines: String::from_utf8_lossy(&bytes)
-                        .lines()
-                        .map(ToOwned::to_owned)
-                        .collect(),
+            match manager.run_command(*id, command) {
+                Ok((stdout, stderr, exit_code)) => Response::CommandOutput {
+                    stdout,
+                    stderr,
+                    exit_code,
                 },
                 Err(error) => Response::Error {
                     message: error.to_string(),
                 },
             }
         }
-        Request::Resize { id, cols, rows } => {
-            let mut manager = pty_manager.lock().await;
-            match manager.resize(*id, *cols, *rows) {
+        Request::ReadTaskGraph => {
+            let planner = planner.lock().await;
+            Response::TaskGraph {
+                tasks: planner.graph().tasks.clone(),
+            }
+        }
+        Request::WriteTaskGraph { tasks } => {
+            let mut planner = planner.lock().await;
+            match planner.set_graph(TaskGraph {
+                tasks: tasks.clone(),
+                updated_at: Utc::now(),
+            }) {
                 Ok(()) => Response::Ok,
                 Err(error) => Response::Error {
                     message: error.to_string(),
                 },
             }
         }
-        Request::Subscribe { .. } => Response::Ok,
         Request::GetFileOwnership => {
             let manager = pty_manager.lock().await;
             Response::FileOwnership {
@@ -274,31 +328,32 @@ async fn dispatch_request(
                 }
             }
         }
-        Request::ArchiveAgent { id, keep_worktree } => {
-            let mut manager = pty_manager.lock().await;
-            match manager.archive_agent(*id, *keep_worktree) {
-                Ok(agent_info) => {
-                    let mut store = session_store.lock().await;
-                    store.update(agent_info);
-                    if let Err(error) = store.save() {
-                        return Response::Error {
-                            message: error.to_string(),
-                        };
-                    }
-                    Response::Ok
-                }
+        Request::GetBuffer { id } => {
+            let manager = pty_manager.lock().await;
+            match manager.get_buffer(*id) {
+                Ok(bytes) => Response::Output {
+                    lines: String::from_utf8_lossy(&bytes)
+                        .lines()
+                        .map(ToOwned::to_owned)
+                        .collect(),
+                },
                 Err(error) => Response::Error {
                     message: error.to_string(),
                 },
             }
         }
-        Request::WaitForIdle { .. }
-        | Request::RunCommand { .. }
-        | Request::ReadTaskGraph
-        | Request::WriteTaskGraph { .. }
-        | Request::RequestReview { .. }
-        | Request::Unknown => Response::Error {
-            message: "request not implemented in Phase 2A".to_owned(),
+        Request::Resize { id, cols, rows } => {
+            let mut manager = pty_manager.lock().await;
+            match manager.resize(*id, *cols, *rows) {
+                Ok(()) => Response::Ok,
+                Err(error) => Response::Error {
+                    message: error.to_string(),
+                },
+            }
+        }
+        Request::Subscribe { .. } => Response::Ok,
+        Request::RequestReview { .. } | Request::Unknown => Response::Error {
+            message: "request not implemented".to_owned(),
         },
     }
 }
@@ -368,7 +423,7 @@ fn placeholder_agent(id: SessionId, agent_type: AgentType, task: String) -> Agen
         workdir: PathBuf::from("."),
         branch: None,
         file_ownership: Vec::new(),
-        created_at: chrono::Utc::now(),
+        created_at: Utc::now(),
         last_output_at: None,
         context_usage: None,
         exit_code: None,

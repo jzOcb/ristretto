@@ -12,6 +12,7 @@ use tokio::sync::Mutex;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
+use ristd::planner::TaskPlanner;
 use ristd::pty_manager::PtyManager;
 use ristd::session_store::SessionStore;
 use ristd::socket_server::SocketServer;
@@ -70,6 +71,7 @@ async fn main() -> io::Result<()> {
     let socket_path = args.socket.unwrap_or_else(|| base_dir.join("daemon.sock"));
     let pid_path = base_dir.join("daemon.pid");
     let sessions_path = base_dir.join("sessions.json");
+    let task_graph_path = base_dir.join("task_graph.json");
 
     let _pid_file = lock_pid_file(&pid_path)?;
     if socket_path.exists() {
@@ -78,10 +80,14 @@ async fn main() -> io::Result<()> {
 
     let session_store = Arc::new(Mutex::new(SessionStore::load(&sessions_path)?));
     let pty_manager = Arc::new(Mutex::new(PtyManager::new()));
+    let mut planner = TaskPlanner::new(task_graph_path);
+    planner.load()?;
+    let planner = Arc::new(Mutex::new(planner));
     let server = SocketServer::bind(
         &socket_path,
         Arc::clone(&pty_manager),
         Arc::clone(&session_store),
+        Arc::clone(&planner),
     )
     .await?;
 

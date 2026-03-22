@@ -9,6 +9,7 @@ use tokio::sync::Mutex;
 use rist_shared::protocol::{decode_frame_async, encode_frame_async, Event, Request, Response};
 use rist_shared::{AgentStatus, AgentType};
 use ristd::agent_adapter::AgentAdapter;
+use ristd::planner::TaskPlanner;
 use ristd::pty_manager::PtyManager;
 use ristd::session_store::SessionStore;
 use ristd::socket_server::SocketServer;
@@ -67,6 +68,9 @@ async fn spawn_then_list() {
         &socket_path,
         Arc::new(Mutex::new(manager)),
         Arc::new(Mutex::new(SessionStore::new(sessions_path))),
+        Arc::new(Mutex::new(TaskPlanner::new(
+            temp.path().join("task_graph.json"),
+        ))),
     )
     .await
     .expect("bind");
@@ -123,6 +127,9 @@ async fn spawn_events_broadcast_to_all_clients() {
         &socket_path,
         Arc::new(Mutex::new(manager)),
         Arc::new(Mutex::new(SessionStore::new(sessions_path))),
+        Arc::new(Mutex::new(TaskPlanner::new(
+            temp.path().join("task_graph.json"),
+        ))),
     )
     .await
     .expect("bind");

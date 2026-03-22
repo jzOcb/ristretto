@@ -1186,8 +1186,16 @@ dependencies = [
 name = "rist-mcp"
 version = "0.1.0"
 dependencies = [
+ "chrono",
+ "portable-pty",
+ "rist",
  "rist-shared",
+ "ristd",
+ "serde",
+ "serde_json",
+ "tempfile",
  "tokio",
+ "uuid",
 ]
 
 [[package]]

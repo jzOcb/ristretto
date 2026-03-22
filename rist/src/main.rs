@@ -1,7 +1,6 @@
 //! Terminal client for the Ristretto daemon.
 
 mod app;
-mod daemon_client;
 mod event;
 mod ui;
 
@@ -15,9 +14,9 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use crossterm::ExecutableCommand;
-use daemon_client::DaemonClient;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
+use rist::daemon_client::DaemonClient;
 use rist_shared::i18n::tr;
 use tokio::time::MissedTickBehavior;
 

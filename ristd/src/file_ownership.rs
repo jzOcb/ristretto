@@ -73,13 +73,16 @@ impl FileOwnership {
     /// Releases every file and interface owned by `session_id`.
     pub fn release(&mut self, session_id: SessionId) {
         self.ownership.retain(|_, owner| *owner != session_id);
-        self.interfaces.retain(|_, contract| contract.owner != session_id);
+        self.interfaces
+            .retain(|_, contract| contract.owner != session_id);
     }
 
     /// Returns whether `session_id` owns `file`.
     #[must_use]
     pub fn check(&self, session_id: SessionId, file: &Path) -> bool {
-        self.ownership.get(file).is_some_and(|owner| *owner == session_id)
+        self.ownership
+            .get(file)
+            .is_some_and(|owner| *owner == session_id)
     }
 
     /// Returns the current path-to-owner map.

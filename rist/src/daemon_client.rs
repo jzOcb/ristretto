@@ -7,12 +7,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde::Deserialize;
-use tokio::net::UnixStream;
 use tokio::io::AsyncReadExt;
+use tokio::net::UnixStream;
 use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
 
 use rist_shared::protocol::{decode_frame_async, encode_frame_async, Event, Request, Response};
-use rist_shared::{AgentInfo, AgentStatus, AgentType, EventFilter, SessionId, Task, TaskStatus};
+use rist_shared::{
+    AgentInfo, AgentStatus, AgentType, EventFilter, MergeStrategy, SessionId, Task, TaskStatus,
+};
 
 /// Daemon-side updates forwarded to the TUI.
 #[derive(Debug, Clone)]
@@ -37,33 +39,66 @@ enum Command {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum DaemonFrame {
-    Pong { version: String },
-    AgentSpawned { id: SessionId },
-    AgentList { agents: Vec<AgentInfo> },
-    Output { lines: Vec<String> },
-    TaskGraph { tasks: Vec<Task> },
+    Pong {
+        version: String,
+    },
+    AgentSpawned {
+        id: SessionId,
+    },
+    AgentList {
+        agents: Vec<AgentInfo>,
+    },
+    Output {
+        lines: Vec<String>,
+    },
+    TaskGraph {
+        tasks: Vec<Task>,
+    },
     FileOwnership {
         map: std::collections::HashMap<std::path::PathBuf, SessionId>,
     },
-    MergePreview { diff: String, conflicts: Vec<String> },
-    MergeResult { success: bool, message: String },
+    MergePreview {
+        diff: String,
+        conflicts: Vec<String>,
+    },
+    MergeResult {
+        success: bool,
+        message: String,
+    },
     CommandOutput {
         stdout: String,
         stderr: String,
         exit_code: i32,
     },
     Ok,
-    Error { message: String },
-    PtyData { id: SessionId, data: Vec<u8> },
+    Error {
+        message: String,
+    },
+    PtyData {
+        id: SessionId,
+        data: Vec<u8>,
+    },
     StatusChange {
         id: SessionId,
         old: AgentStatus,
         new: AgentStatus,
     },
-    AgentExited { id: SessionId, exit_code: i32 },
-    TaskUpdate { task_id: String, status: TaskStatus },
-    ContextWarning { id: SessionId, usage_pct: f64 },
-    LoopDetected { id: SessionId, pattern: String },
+    AgentExited {
+        id: SessionId,
+        exit_code: i32,
+    },
+    TaskUpdate {
+        task_id: String,
+        status: TaskStatus,
+    },
+    ContextWarning {
+        id: SessionId,
+        usage_pct: f64,
+    },
+    LoopDetected {
+        id: SessionId,
+        pattern: String,
+    },
     #[serde(other)]
     Unknown,
 }
@@ -194,6 +229,130 @@ impl DaemonClient {
         {
             Response::AgentSpawned { id } => Ok(id),
             other => unexpected_response("spawn_agent", other),
+        }
+    }
+
+    /// Spawns a new agent session with full daemon parameters.
+    pub async fn spawn_agent_with_options(
+        &self,
+        agent_type: AgentType,
+        task: String,
+        repo_path: Option<PathBuf>,
+        file_ownership: Vec<PathBuf>,
+    ) -> io::Result<SessionId> {
+        match self
+            .request(Request::SpawnAgent {
+                agent_type,
+                task,
+                repo_path,
+                file_ownership,
+            })
+            .await?
+        {
+            Response::AgentSpawned { id } => Ok(id),
+            other => unexpected_response("spawn_agent_with_options", other),
+        }
+    }
+
+    /// Archives an agent session.
+    pub async fn archive_agent(&self, id: SessionId, keep_worktree: bool) -> io::Result<()> {
+        match self
+            .request(Request::ArchiveAgent { id, keep_worktree })
+            .await?
+        {
+            Response::Ok => Ok(()),
+            other => unexpected_response("archive_agent", other),
+        }
+    }
+
+    /// Waits for an agent to reach an idle or terminal state.
+    pub async fn wait_for_idle(&self, id: SessionId, timeout_secs: u64) -> io::Result<()> {
+        match self
+            .request(Request::WaitForIdle {
+                id,
+                timeout_secs,
+                settling_secs: 5,
+            })
+            .await?
+        {
+            Response::Ok => Ok(()),
+            other => unexpected_response("wait_for_idle", other),
+        }
+    }
+
+    /// Runs a shell command in the agent's worktree.
+    pub async fn run_command(
+        &self,
+        id: SessionId,
+        command: String,
+    ) -> io::Result<(String, String, i32)> {
+        match self.request(Request::RunCommand { id, command }).await? {
+            Response::CommandOutput {
+                stdout,
+                stderr,
+                exit_code,
+            } => Ok((stdout, stderr, exit_code)),
+            other => unexpected_response("run_command", other),
+        }
+    }
+
+    /// Returns the current planner task graph.
+    pub async fn read_task_graph(&self) -> io::Result<Vec<Task>> {
+        match self.request(Request::ReadTaskGraph).await? {
+            Response::TaskGraph { tasks } => Ok(tasks),
+            other => unexpected_response("read_task_graph", other),
+        }
+    }
+
+    /// Replaces the planner task graph.
+    pub async fn write_task_graph(&self, tasks: Vec<Task>) -> io::Result<()> {
+        match self.request(Request::WriteTaskGraph { tasks }).await? {
+            Response::Ok => Ok(()),
+            other => unexpected_response("write_task_graph", other),
+        }
+    }
+
+    /// Returns the daemon's current file-ownership map.
+    pub async fn get_file_ownership(
+        &self,
+    ) -> io::Result<std::collections::HashMap<std::path::PathBuf, SessionId>> {
+        match self.request(Request::GetFileOwnership).await? {
+            Response::FileOwnership { map } => Ok(map),
+            other => unexpected_response("get_file_ownership", other),
+        }
+    }
+
+    /// Returns a merge preview for an agent branch.
+    pub async fn preview_merge(&self, id: SessionId) -> io::Result<(String, Vec<String>)> {
+        match self
+            .request(Request::MergeAgent {
+                id,
+                preview_only: true,
+                strategy: MergeStrategy::Squash,
+            })
+            .await?
+        {
+            Response::MergePreview { diff, conflicts } => Ok((diff, conflicts)),
+            other => unexpected_response("preview_merge", other),
+        }
+    }
+
+    /// Executes a merge for an agent branch.
+    pub async fn merge_agent(
+        &self,
+        id: SessionId,
+        strategy: MergeStrategy,
+    ) -> io::Result<(bool, String)> {
+        match self
+            .request(Request::MergeAgent {
+                id,
+                preview_only: false,
+                strategy,
+            })
+            .await?
+        {
+            Response::MergeResult { success, message } => Ok((success, message)),
+            other => unexpected_response("merge_agent", other),
         }
     }
 

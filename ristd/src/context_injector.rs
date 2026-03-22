@@ -73,7 +73,10 @@ pub fn generate_context_file(
             markdown.push_str("These tasks must complete before yours:\n");
             for dependency_id in &task.depends_on {
                 if let Some(dependency) = task_graph.and_then(|graph| {
-                    graph.tasks.iter().find(|candidate| candidate.id == *dependency_id)
+                    graph
+                        .tasks
+                        .iter()
+                        .find(|candidate| candidate.id == *dependency_id)
                 }) {
                     markdown.push_str(&format!(
                         "- {}: {} — {:?}\n",
@@ -112,7 +115,9 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use chrono::Utc;
-    use rist_shared::{AgentInfo, AgentStatus, AgentType, Priority, SessionId, Task, TaskGraph, TaskStatus};
+    use rist_shared::{
+        AgentInfo, AgentStatus, AgentType, Priority, SessionId, Task, TaskGraph, TaskStatus,
+    };
 
     use super::generate_context_file;
 
@@ -137,9 +142,16 @@ mod tests {
     fn context_file_contains_agent_and_peer_sections() {
         let owner = SessionId::new();
         let peer_id = SessionId::new();
-        let agent_info =
-            agent(owner, "Implement daemon merge flow", vec![PathBuf::from("src/main.rs")]);
-        let peer = agent(peer_id, "Review protocol", vec![PathBuf::from("src/lib.rs")]);
+        let agent_info = agent(
+            owner,
+            "Implement daemon merge flow",
+            vec![PathBuf::from("src/main.rs")],
+        );
+        let peer = agent(
+            peer_id,
+            "Review protocol",
+            vec![PathBuf::from("src/lib.rs")],
+        );
         let graph = TaskGraph {
             tasks: vec![
                 Task {
