@@ -1,0 +1,17 @@
+[package]
+name = "rist"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+clap.workspace = true
+crossterm.workspace = true
+ratatui.workspace = true
+rist-shared = { path = "../rist-shared" }
+tokio.workspace = true
+unicode-width.workspace = true
+
+[lints]
+workspace = true
+

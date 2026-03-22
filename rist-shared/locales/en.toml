@@ -1,0 +1,15 @@
+[agent]
+spawning = "Spawning %{agent_type} agent for: %{task}"
+completed = "Agent %{id} completed (exit code %{code})"
+stuck = "Agent %{id} appears stuck (no output for %{minutes}min)"
+loop_detected = "Agent %{id} in loop: %{pattern}"
+
+[planner]
+decomposing = "Breaking down task into subtasks..."
+plan_ready = "Plan ready - %{count} tasks, %{parallel} parallelizable"
+approve = "Review plan and press Enter to approve, or 'e' to edit"
+
+[tui]
+status_bar = "Ristretto - %{count} agents"
+help = "Press ? for help"
+

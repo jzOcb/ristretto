@@ -1,0 +1,13 @@
+[package]
+name = "rist-channel"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+rist-shared = { path = "../rist-shared" }
+tokio.workspace = true
+
+[lints]
+workspace = true
+
