@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::types::{
-    AgentInfo, AgentStatus, AgentType, ContextBudget, EventFilter, HookConfig, HookEvent,
-    HookResult, MergeStrategy, ReviewScope, SessionId, Task, TaskStatus,
+    AgentInfo, AgentStatus, AgentType, ContextBudget, EventFilter, HandoffStatus, HookConfig,
+    HookEvent, HookResult, MergeStrategy, ReviewScope, SessionId, Task, TaskStatus,
 };
 
 pub const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
@@ -139,6 +139,16 @@ pub enum Request {
         /// Session identifier.
         id: SessionId,
     },
+    /// Read stored handoff state for a session.
+    HandoffStatus {
+        /// Session identifier.
+        id: SessionId,
+    },
+    /// Re-queue a stored handoff for injection on a future spawn.
+    HandoffInject {
+        /// Session identifier.
+        id: SessionId,
+    },
     /// Forward-compatible fallback for unknown values.
     #[serde(other)]
     Unknown,
@@ -222,6 +232,11 @@ pub enum Response {
     HookConfigs {
         /// Configured hooks in file order.
         hooks: Vec<HookConfig>,
+    },
+    /// Handoff status snapshot.
+    HandoffStatus {
+        /// Handoff state for the requested session.
+        status: HandoffStatus,
     },
     /// Generic success response.
     Ok,

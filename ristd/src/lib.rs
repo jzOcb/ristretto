@@ -5,6 +5,7 @@ pub mod context_injector;
 pub mod context_monitor;
 pub mod file_ownership;
 pub mod git_manager;
+pub mod handoff;
 pub mod hooks;
 pub mod output_filter;
 pub mod planner;

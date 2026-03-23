@@ -227,6 +227,30 @@ pub fn tool_definitions() -> Vec<Value> {
                 "additionalProperties": false
             }),
         ),
+        tool(
+            "handoff_status",
+            "Return whether a session has handoff content and whether it is pending for injection.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "session_id": { "type": "string" }
+                },
+                "required": ["session_id"],
+                "additionalProperties": false
+            }),
+        ),
+        tool(
+            "handoff_inject",
+            "Re-queue a stored handoff so it is injected on the next matching agent spawn.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "session_id": { "type": "string" }
+                },
+                "required": ["session_id"],
+                "additionalProperties": false
+            }),
+        ),
     ]
 }
 
@@ -446,6 +470,25 @@ pub async fn handle_tool_call(
                     })
                 }).collect::<Vec<_>>()
             }))
+        }
+        "handoff_status" => {
+            let session_id = parse_session_id(required_str(&arguments, "session_id")?)?;
+            let status = client
+                .handoff_status(session_id)
+                .await
+                .map_err(|error| error.to_string())?;
+            Ok(json!({
+                "available": status.available,
+                "pending": status.pending,
+            }))
+        }
+        "handoff_inject" => {
+            let session_id = parse_session_id(required_str(&arguments, "session_id")?)?;
+            client
+                .inject_handoff(session_id)
+                .await
+                .map_err(|error| error.to_string())?;
+            Ok(json!({ "success": true }))
         }
         _ => Err(format!("unknown tool: {name}")),
     }

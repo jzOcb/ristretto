@@ -27,6 +27,7 @@ use crate::context_injector::generate_context_file;
 use crate::context_monitor::ContextMonitor;
 use crate::file_ownership::FileOwnership;
 use crate::git_manager::{GitManager, MergePreview, MergeResult};
+use crate::handoff::{HandoffManager, HandoffResult};
 use crate::hooks::{HookEngine, HookRunOutcome};
 use crate::output_filter::OutputFilter;
 use crate::recovery::{RecoveryAction, RecoveryManager};
@@ -36,6 +37,7 @@ use crate::ring_buffer::RingBuffer;
 const DEFAULT_ROTATION_THRESHOLD: f64 = 80.0;
 const STATUS_SAMPLE_BYTES: usize = 8192;
 const CONTEXT_FILE_NAME: &str = "RISTRETTO.md";
+const HANDOFF_TIMEOUT_SECS: u64 = 30;
 const PROGRESS_FILE_NAME: &str = "PROGRESS.md";
 const RECENT_OUTPUT_LIMIT: usize = 64;
 
@@ -65,6 +67,14 @@ struct PtySession {
     exited: bool,
 }
 
+struct PendingHandoff {
+    source_id: SessionId,
+    source_workdir: PathBuf,
+    task: String,
+    repo_path: Option<PathBuf>,
+    content: String,
+}
+
 pub struct IdleCheck {
     pub status: AgentStatus,
     pub complete: bool,
@@ -79,6 +89,7 @@ pub enum TerminationRequest {
 pub struct PtyManager {
     sessions: HashMap<SessionId, PtySession>,
     archived: HashMap<SessionId, AgentInfo>,
+    pending_handoffs: VecDeque<PendingHandoff>,
     adapters: HashMap<String, Box<dyn AgentAdapter>>,
     pending_events: Arc<Mutex<VecDeque<Event>>>,
     file_ownership: FileOwnership,
@@ -94,6 +105,7 @@ impl PtyManager {
         let mut manager = Self {
             sessions: HashMap::new(),
             archived: HashMap::new(),
+            pending_handoffs: VecDeque::new(),
             adapters: HashMap::new(),
             pending_events: Arc::new(Mutex::new(VecDeque::new())),
             file_ownership: FileOwnership::new(),
@@ -121,6 +133,8 @@ impl PtyManager {
         file_ownership: Vec<PathBuf>,
     ) -> io::Result<SessionId> {
         let id = SessionId::new();
+        let handoff_manager = HandoffManager::new();
+        let requested_task = task.clone();
         self.file_ownership
             .declare(id, file_ownership.clone())
             .map_err(io::Error::other)?;
@@ -136,11 +150,23 @@ impl PtyManager {
         } else {
             std::env::current_dir()?
         };
+        let current_repo_path = repo_root
+            .as_ref()
+            .map(|root| root.path.clone())
+            .or_else(|| repo_path.clone());
+        let mut pending_handoff =
+            self.take_pending_handoff(&requested_task, current_repo_path.as_deref());
+        let task = if let Some(pending) = pending_handoff.as_ref() {
+            handoff_manager.inject_handoff(&requested_task, &pending.content)
+        } else {
+            requested_task.clone()
+        };
         let task = match &repo_root {
             Some(repo_root) => match self.hooks.injected_context(&repo_root.path) {
                 Ok(injected) if injected.is_empty() => task,
                 Ok(injected) => format!("{injected}\n\n{task}"),
                 Err(error) => {
+                    self.restore_pending_handoff(pending_handoff.take());
                     self.file_ownership.release(id);
                     let _ = GitManager::remove_worktree(&repo_root.path, &workdir, true);
                     return Err(error);
@@ -155,11 +181,13 @@ impl PtyManager {
             {
                 Ok(outcome) if !outcome.blocked => {}
                 Ok(_) => {
+                    self.restore_pending_handoff(pending_handoff.take());
                     self.file_ownership.release(id);
                     let _ = GitManager::remove_worktree(&repo_root.path, &workdir, true);
                     return Err(io::Error::other("pre-spawn hook blocked agent spawn"));
                 }
                 Err(error) => {
+                    self.restore_pending_handoff(pending_handoff.take());
                     self.file_ownership.release(id);
                     let _ = GitManager::remove_worktree(&repo_root.path, &workdir, true);
                     return Err(error);
@@ -177,6 +205,7 @@ impl PtyManager {
         if let Some(repo_root) = &repo_root {
             metadata.insert("repo_path".to_owned(), repo_root.path.display().to_string());
         }
+        metadata.insert("base_task".to_owned(), requested_task);
         if let Some(branch_name) = &branch {
             metadata.insert("branch".to_owned(), branch_name.clone());
         }
@@ -197,6 +226,7 @@ impl PtyManager {
         };
 
         if let Err(error) = self.write_context_file(&info) {
+            self.restore_pending_handoff(pending_handoff.take());
             self.file_ownership.release(id);
             if let Some(repo_root) = &repo_root {
                 let _ = GitManager::remove_worktree(&repo_root.path, &workdir, true);
@@ -226,6 +256,7 @@ impl PtyManager {
         let child = match pair.slave.spawn_command(command) {
             Ok(child) => child,
             Err(error) => {
+                self.restore_pending_handoff(pending_handoff.take());
                 self.file_ownership.release(id);
                 if let Some(repo_root) = &repo_root {
                     let _ = GitManager::remove_worktree(&repo_root.path, &workdir, true);
@@ -305,6 +336,10 @@ impl PtyManager {
                 exited: false,
             },
         );
+        if let Some(pending) = pending_handoff.take() {
+            self.set_handoff_pending(pending.source_id, false);
+            let _ = handoff_manager.cleanup(&pending.source_workdir);
+        }
         Ok(id)
     }
 
@@ -803,7 +838,7 @@ impl PtyManager {
         if outcome.blocked {
             return Err(io::Error::other("rotation hook blocked context rotation"));
         }
-        let prompt = {
+        let (prompt, info, recent_output) = {
             let session = self
                 .sessions
                 .get(&id)
@@ -814,13 +849,59 @@ impl PtyManager {
                 .map(|telemetry| telemetry.recent_lines.iter().cloned().collect::<Vec<_>>())
                 .unwrap_or_default();
             let progress_path = session.info.workdir.join(PROGRESS_FILE_NAME);
-            self.context_monitor.rotation_prompt(
-                &session.info,
-                &recent_output,
-                progress_path.to_str(),
+            (
+                self.context_monitor.rotation_prompt(
+                    &session.info,
+                    &recent_output,
+                    progress_path.to_str(),
+                ),
+                session.info.clone(),
+                recent_output,
             )
         };
-        self.write_to_agent(id, &format!("{prompt}\n"))
+        self.write_to_agent(id, &format!("{prompt}\n"))?;
+
+        let handoff_manager = HandoffManager::new();
+        let handoff = match handoff_manager.wait_for_handoff(&info.workdir, HANDOFF_TIMEOUT_SECS)? {
+            HandoffResult::Written(contents) => contents,
+            HandoffResult::Timeout(_) => handoff_manager.generate_fallback(&info, &recent_output),
+        };
+        self.store_handoff(id, handoff, &info);
+        Ok(())
+    }
+
+    pub fn handoff_status(&self, id: SessionId) -> io::Result<rist_shared::HandoffStatus> {
+        let info = self.agent_info(id)?;
+        let available = info
+            .metadata
+            .get("handoff_content")
+            .is_some_and(|value| !value.trim().is_empty());
+        let pending = info
+            .metadata
+            .get("handoff_pending")
+            .is_some_and(|value| value == "true");
+        Ok(rist_shared::HandoffStatus { available, pending })
+    }
+
+    pub fn inject_handoff(&mut self, id: SessionId) -> io::Result<()> {
+        let info = self.agent_info(id)?.clone();
+        let content = info
+            .metadata
+            .get("handoff_content")
+            .cloned()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "handoff not available"))?;
+        self.pending_handoffs
+            .retain(|pending| pending.source_id != id);
+        self.pending_handoffs.push_back(PendingHandoff {
+            source_id: id,
+            source_workdir: info.workdir.clone(),
+            task: base_task_from_info(&info),
+            repo_path: repo_path_from_metadata(&info),
+            content,
+        });
+        self.set_handoff_pending(id, true);
+        Ok(())
     }
 
     /// Builds a cross-review request for the selected agent session.
@@ -946,6 +1027,56 @@ impl PtyManager {
             .get(&id)
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "session not found"))
     }
+
+    fn take_pending_handoff(
+        &mut self,
+        task: &str,
+        repo_path: Option<&Path>,
+    ) -> Option<PendingHandoff> {
+        let index = self.pending_handoffs.iter().position(|pending| {
+            pending.task == task
+                && match (&pending.repo_path, repo_path) {
+                    (Some(left), Some(right)) => left == right,
+                    (None, None) => true,
+                    _ => false,
+                }
+        })?;
+        self.pending_handoffs.remove(index)
+    }
+
+    fn restore_pending_handoff(&mut self, pending: Option<PendingHandoff>) {
+        if let Some(pending) = pending {
+            self.set_handoff_pending(pending.source_id, true);
+            self.pending_handoffs.push_front(pending);
+        }
+    }
+
+    fn store_handoff(&mut self, id: SessionId, handoff: String, info: &AgentInfo) {
+        self.pending_handoffs
+            .retain(|pending| pending.source_id != id);
+        self.pending_handoffs.push_back(PendingHandoff {
+            source_id: id,
+            source_workdir: info.workdir.clone(),
+            task: base_task_from_info(info),
+            repo_path: repo_path_from_metadata(info),
+            content: handoff.clone(),
+        });
+        self.set_metadata_value(id, "handoff_content", handoff);
+        self.set_handoff_pending(id, true);
+    }
+
+    fn set_handoff_pending(&mut self, id: SessionId, pending: bool) {
+        self.set_metadata_value(id, "handoff_pending", pending.to_string());
+    }
+
+    fn set_metadata_value(&mut self, id: SessionId, key: &str, value: String) {
+        if let Some(session) = self.sessions.get_mut(&id) {
+            session.info.metadata.insert(key.to_owned(), value.clone());
+        }
+        if let Some(info) = self.archived.get_mut(&id) {
+            info.metadata.insert(key.to_owned(), value);
+        }
+    }
 }
 
 impl Default for PtyManager {
@@ -988,6 +1119,17 @@ fn repo_path_from_info(info: &AgentInfo) -> io::Result<PathBuf> {
         .get("repo_path")
         .map(PathBuf::from)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "agent has no repository"))
+}
+
+fn repo_path_from_metadata(info: &AgentInfo) -> Option<PathBuf> {
+    info.metadata.get("repo_path").map(PathBuf::from)
+}
+
+fn base_task_from_info(info: &AgentInfo) -> String {
+    info.metadata
+        .get("base_task")
+        .cloned()
+        .unwrap_or_else(|| info.task.clone())
 }
 
 fn project_root_for_info(info: &AgentInfo) -> io::Result<Option<PathBuf>> {
