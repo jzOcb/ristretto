@@ -476,6 +476,12 @@ impl<'de> Deserialize<'de> for ContextUsage {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HandoffStatus {
+    pub available: bool,
+    pub pending: bool,
+}
+
 /// Persisted and broadcast session metadata.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentInfo {

@@ -15,8 +15,8 @@ use rist_shared::protocol::{
     decode_frame_async, encode_frame_async, Event, Request, Response, MAX_FRAME_BYTES,
 };
 use rist_shared::{
-    AgentInfo, AgentStatus, AgentType, ContextBudget, EventFilter, HookConfig, HookEvent,
-    HookResult, MergeStrategy, SessionId, Task,
+    AgentInfo, AgentStatus, AgentType, ContextBudget, EventFilter, HandoffStatus, HookConfig,
+    HookEvent, HookResult, MergeStrategy, SessionId, Task,
 };
 
 /// Daemon-side updates forwarded to the TUI.
@@ -313,6 +313,22 @@ impl DaemonClient {
         match self.request(Request::ListHooks { id }).await? {
             Response::HookConfigs { hooks } => Ok(hooks),
             other => unexpected_response("list_hooks", other),
+        }
+    }
+
+    /// Returns whether a session has handoff content and whether it is queued for injection.
+    pub async fn handoff_status(&self, id: SessionId) -> io::Result<HandoffStatus> {
+        match self.request(Request::HandoffStatus { id }).await? {
+            Response::HandoffStatus { status } => Ok(status),
+            other => unexpected_response("handoff_status", other),
+        }
+    }
+
+    /// Re-queues a stored handoff so it will be injected on the next matching spawn.
+    pub async fn inject_handoff(&self, id: SessionId) -> io::Result<()> {
+        match self.request(Request::HandoffInject { id }).await? {
+            Response::Ok => Ok(()),
+            other => unexpected_response("inject_handoff", other),
         }
     }
 

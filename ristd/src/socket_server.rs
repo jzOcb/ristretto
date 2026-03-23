@@ -406,6 +406,24 @@ async fn dispatch_request(
                 },
             }
         }
+        Request::HandoffStatus { id } => {
+            let manager = pty_manager.lock().await;
+            match manager.handoff_status(*id) {
+                Ok(status) => Response::HandoffStatus { status },
+                Err(error) => Response::Error {
+                    message: error.to_string(),
+                },
+            }
+        }
+        Request::HandoffInject { id } => {
+            let mut manager = pty_manager.lock().await;
+            match manager.inject_handoff(*id) {
+                Ok(()) => Response::Ok,
+                Err(error) => Response::Error {
+                    message: error.to_string(),
+                },
+            }
+        }
         Request::RequestReview {
             agent_id,
             reviewer_type,
