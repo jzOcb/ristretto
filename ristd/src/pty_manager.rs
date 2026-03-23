@@ -14,7 +14,10 @@ use nix::sys::signal::{kill, Signal};
 use nix::unistd::Pid;
 use portable_pty::{native_pty_system, Child, MasterPty, PtySize};
 use rist_shared::protocol::Event;
-use rist_shared::{AgentInfo, AgentStatus, AgentType, ContextUsage, MergeStrategy, SessionId};
+use rist_shared::{
+    AgentInfo, AgentStatus, AgentType, ContextUsage, HookConfig, HookEvent, HookResult,
+    MergeStrategy, SessionId,
+};
 use tracing::error;
 
 use crate::agent_adapter::{
@@ -24,6 +27,7 @@ use crate::context_injector::generate_context_file;
 use crate::context_monitor::ContextMonitor;
 use crate::file_ownership::FileOwnership;
 use crate::git_manager::{GitManager, MergePreview, MergeResult};
+use crate::hooks::{HookEngine, HookRunOutcome};
 use crate::recovery::{RecoveryAction, RecoveryManager};
 use crate::review_engine::ReviewRequest;
 use crate::ring_buffer::RingBuffer;
@@ -77,6 +81,7 @@ pub struct PtyManager {
     file_ownership: FileOwnership,
     context_monitor: ContextMonitor,
     recovery_manager: RecoveryManager,
+    hooks: HookEngine,
 }
 
 impl PtyManager {
@@ -91,6 +96,7 @@ impl PtyManager {
             file_ownership: FileOwnership::new(),
             context_monitor: ContextMonitor::new(DEFAULT_ROTATION_THRESHOLD),
             recovery_manager: RecoveryManager::new(),
+            hooks: HookEngine::new(),
         };
         manager.register_adapter(AgentType::Claude, Box::new(ClaudeCodeAdapter));
         manager.register_adapter(AgentType::Codex, Box::new(CodexAdapter));
@@ -127,6 +133,36 @@ impl PtyManager {
         } else {
             std::env::current_dir()?
         };
+        let task = match &repo_root {
+            Some(repo_root) => match self.hooks.injected_context(&repo_root.path) {
+                Ok(injected) if injected.is_empty() => task,
+                Ok(injected) => format!("{injected}\n\n{task}"),
+                Err(error) => {
+                    self.file_ownership.release(id);
+                    let _ = GitManager::remove_worktree(&repo_root.path, &workdir, true);
+                    return Err(error);
+                }
+            },
+            None => task,
+        };
+        if let Some(repo_root) = &repo_root {
+            match self
+                .hooks
+                .run_hooks(id, &repo_root.path, &workdir, HookEvent::PreSpawn)
+            {
+                Ok(outcome) if !outcome.blocked => {}
+                Ok(_) => {
+                    self.file_ownership.release(id);
+                    let _ = GitManager::remove_worktree(&repo_root.path, &workdir, true);
+                    return Err(io::Error::other("pre-spawn hook blocked agent spawn"));
+                }
+                Err(error) => {
+                    self.file_ownership.release(id);
+                    let _ = GitManager::remove_worktree(&repo_root.path, &workdir, true);
+                    return Err(error);
+                }
+            }
+        }
         let branch = if repo_root.is_some() {
             current_branch_name(&workdir)?
         } else {
@@ -278,9 +314,17 @@ impl PtyManager {
     /// Polls all child processes and updates in-memory status/exit metadata.
     pub fn check_exits(&mut self) {
         let now = Utc::now();
+        let mut post_output_sessions = Vec::new();
 
         for session in self.sessions.values_mut() {
-            Self::refresh_runtime_state(session, &self.adapters, &self.pending_events, now);
+            let next_status =
+                Self::refresh_runtime_state(session, &self.adapters, &self.pending_events, now);
+            if matches!(
+                next_status,
+                Some(AgentStatus::Idle) | Some(AgentStatus::Waiting)
+            ) {
+                post_output_sessions.push(session.info.id);
+            }
 
             if session.exited {
                 continue;
@@ -289,6 +333,10 @@ impl PtyManager {
             if let Ok(Some(exit_status)) = session.child.try_wait() {
                 Self::apply_exit_state(session, &self.pending_events, exit_status);
             }
+        }
+
+        for session_id in post_output_sessions {
+            let _ = self.run_hooks_with_outcome(session_id, HookEvent::PostOutput);
         }
     }
 
@@ -433,6 +481,31 @@ impl PtyManager {
         GitManager::squash_merge(&repo_path, branch, message)
     }
 
+    pub fn run_hooks(&self, id: SessionId, event: HookEvent) -> io::Result<Vec<HookResult>> {
+        Ok(self.run_hooks_with_outcome(id, event)?.results)
+    }
+
+    pub fn run_hooks_with_outcome(
+        &self,
+        id: SessionId,
+        event: HookEvent,
+    ) -> io::Result<HookRunOutcome> {
+        let info = self.agent_info(id)?;
+        let Some(project_root) = project_root_for_info(info)? else {
+            return Ok(HookRunOutcome::default());
+        };
+        self.hooks
+            .run_hooks(id, &project_root, &info.workdir, event)
+    }
+
+    pub fn list_hooks(&self, id: SessionId) -> io::Result<Vec<HookConfig>> {
+        let info = self.agent_info(id)?;
+        let Some(project_root) = project_root_for_info(info)? else {
+            return Ok(Vec::new());
+        };
+        self.hooks.list_hooks(&project_root)
+    }
+
     /// Waits until the session reaches an idle terminal state.
     pub async fn wait_for_idle(
         &mut self,
@@ -550,6 +623,7 @@ impl PtyManager {
         self.check_exits();
 
         let mut actions = Vec::new();
+        let mut stuck_hook_sessions = Vec::new();
         let adapters = &self.adapters;
         let pending_events = Arc::clone(&self.pending_events);
         let context_monitor = self.context_monitor;
@@ -643,6 +717,9 @@ impl PtyManager {
             };
             let action = recovery_manager.evaluate(&session.info, &recent_output, retry_count);
             let issue_key = issue_key(&session.info, loop_pattern.as_deref());
+            if issue_key.as_deref() == Some("idle") {
+                stuck_hook_sessions.push(session.info.id);
+            }
             if let Some(key) = issue_key {
                 if session.last_recovery_issue.as_deref() == Some(key.as_str()) {
                     continue;
@@ -667,11 +744,19 @@ impl PtyManager {
             }
         }
 
+        for session_id in stuck_hook_sessions {
+            let _ = self.run_hooks_with_outcome(session_id, HookEvent::OnStuck);
+        }
+
         actions
     }
 
     /// Sends a context-rotation prompt to the agent session.
     pub fn trigger_rotation(&mut self, id: SessionId) -> io::Result<()> {
+        let outcome = self.run_hooks_with_outcome(id, HookEvent::OnRotation)?;
+        if outcome.blocked {
+            return Err(io::Error::other("rotation hook blocked context rotation"));
+        }
         let prompt = {
             let session = self
                 .sessions
@@ -717,10 +802,10 @@ impl PtyManager {
         adapters: &HashMap<String, Box<dyn AgentAdapter>>,
         pending_events: &Arc<Mutex<VecDeque<Event>>>,
         now: DateTime<Utc>,
-    ) {
+    ) -> Option<AgentStatus> {
         session.info.last_output_at = session.last_output_at.lock().ok().and_then(|guard| *guard);
         if session.exited {
-            return;
+            return None;
         }
 
         let recent_output = session
@@ -750,7 +835,9 @@ impl PtyManager {
                     new: detected,
                 });
             }
+            return Some(session.info.status.clone());
         }
+        None
     }
 
     fn apply_exit_state(
@@ -855,6 +942,13 @@ fn repo_path_from_info(info: &AgentInfo) -> io::Result<PathBuf> {
         .get("repo_path")
         .map(PathBuf::from)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "agent has no repository"))
+}
+
+fn project_root_for_info(info: &AgentInfo) -> io::Result<Option<PathBuf>> {
+    if let Some(repo_path) = info.metadata.get("repo_path") {
+        return Ok(Some(PathBuf::from(repo_path)));
+    }
+    HookEngine::discover_project_root(&info.workdir)
 }
 
 fn default_context_tokens(agent_type: &AgentType) -> u64 {

@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use rist::daemon_client::DaemonClient;
-use rist_shared::{AgentType, MergeStrategy, Priority, SessionId, Task, TaskStatus};
+use rist_shared::{AgentType, HookEvent, MergeStrategy, Priority, SessionId, Task, TaskStatus};
 
 /// Returns the static MCP tool catalog.
 #[must_use]
@@ -187,6 +187,34 @@ pub fn tool_definitions() -> Vec<Value> {
                 "additionalProperties": false
             }),
         ),
+        tool(
+            "run_hooks",
+            "Manually trigger lifecycle hooks for a specific agent event.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "session_id": { "type": "string" },
+                    "event": {
+                        "type": "string",
+                        "enum": ["pre_spawn", "post_output", "pre_merge", "post_merge", "on_stuck", "on_rotation"]
+                    }
+                },
+                "required": ["session_id", "event"],
+                "additionalProperties": false
+            }),
+        ),
+        tool(
+            "list_hooks",
+            "List configured lifecycle hooks for an agent session.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "session_id": { "type": "string" }
+                },
+                "required": ["session_id"],
+                "additionalProperties": false
+            }),
+        ),
     ]
 }
 
@@ -352,6 +380,43 @@ pub async fn handle_tool_call(
                 }))
             }
         }
+        "run_hooks" => {
+            let session_id = parse_session_id(required_str(&arguments, "session_id")?)?;
+            let event = parse_hook_event(required_str(&arguments, "event")?)?;
+            let results = client
+                .run_hooks(session_id, event)
+                .await
+                .map_err(|error| error.to_string())?;
+            Ok(json!({
+                "results": results.into_iter().map(|result| {
+                    json!({
+                        "success": result.success,
+                        "stdout": result.stdout,
+                        "stderr": result.stderr,
+                        "duration_ms": result.duration_ms,
+                    })
+                }).collect::<Vec<_>>()
+            }))
+        }
+        "list_hooks" => {
+            let session_id = parse_session_id(required_str(&arguments, "session_id")?)?;
+            let hooks = client
+                .list_hooks(session_id)
+                .await
+                .map_err(|error| error.to_string())?;
+            Ok(json!({
+                "hooks": hooks.into_iter().map(|hook| {
+                    json!({
+                        "event": hook_event_name(&hook.event),
+                        "command": hook.command,
+                        "blocking": hook.blocking,
+                        "timeout_secs": hook.timeout_secs,
+                        "inject_context": hook.inject_context,
+                        "min_interval_secs": hook.min_interval_secs,
+                    })
+                }).collect::<Vec<_>>()
+            }))
+        }
         _ => Err(format!("unknown tool: {name}")),
     }
 }
@@ -452,6 +517,18 @@ fn parse_merge_strategy(value: &str) -> Result<MergeStrategy, String> {
     }
 }
 
+fn parse_hook_event(value: &str) -> Result<HookEvent, String> {
+    match value {
+        "pre_spawn" => Ok(HookEvent::PreSpawn),
+        "post_output" => Ok(HookEvent::PostOutput),
+        "pre_merge" => Ok(HookEvent::PreMerge),
+        "post_merge" => Ok(HookEvent::PostMerge),
+        "on_stuck" => Ok(HookEvent::OnStuck),
+        "on_rotation" => Ok(HookEvent::OnRotation),
+        other => Err(format!("unsupported hook event: {other}")),
+    }
+}
+
 fn required_str<'a>(value: &'a Value, key: &str) -> Result<&'a str, String> {
     value
         .get(key)
@@ -543,6 +620,18 @@ fn agent_status_name(status: &rist_shared::AgentStatus) -> &'static str {
         rist_shared::AgentStatus::Done => "done",
         rist_shared::AgentStatus::Error => "error",
         rist_shared::AgentStatus::Unknown => "unknown",
+    }
+}
+
+fn hook_event_name(event: &HookEvent) -> &'static str {
+    match event {
+        HookEvent::PreSpawn => "pre_spawn",
+        HookEvent::PostOutput => "post_output",
+        HookEvent::PreMerge => "pre_merge",
+        HookEvent::PostMerge => "post_merge",
+        HookEvent::OnStuck => "on_stuck",
+        HookEvent::OnRotation => "on_rotation",
+        HookEvent::Unknown => "unknown",
     }
 }
 

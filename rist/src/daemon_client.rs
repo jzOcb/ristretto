@@ -14,7 +14,10 @@ use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
 use rist_shared::protocol::{
     decode_frame_async, encode_frame_async, Event, Request, Response, MAX_FRAME_BYTES,
 };
-use rist_shared::{AgentInfo, AgentStatus, AgentType, EventFilter, MergeStrategy, SessionId, Task};
+use rist_shared::{
+    AgentInfo, AgentStatus, AgentType, EventFilter, HookConfig, HookEvent, HookResult,
+    MergeStrategy, SessionId, Task,
+};
 
 /// Daemon-side updates forwarded to the TUI.
 #[derive(Debug, Clone)]
@@ -286,6 +289,22 @@ impl DaemonClient {
         {
             Response::MergeResult { success, message } => Ok((success, message)),
             other => unexpected_response("merge_agent", other),
+        }
+    }
+
+    /// Runs lifecycle hooks for a specific session and event.
+    pub async fn run_hooks(&self, id: SessionId, event: HookEvent) -> io::Result<Vec<HookResult>> {
+        match self.request(Request::RunHooks { id, event }).await? {
+            Response::HookResults { results } => Ok(results),
+            other => unexpected_response("run_hooks", other),
+        }
+    }
+
+    /// Lists configured hooks for a specific session context.
+    pub async fn list_hooks(&self, id: SessionId) -> io::Result<Vec<HookConfig>> {
+        match self.request(Request::ListHooks { id }).await? {
+            Response::HookConfigs { hooks } => Ok(hooks),
+            other => unexpected_response("list_hooks", other),
         }
     }
 

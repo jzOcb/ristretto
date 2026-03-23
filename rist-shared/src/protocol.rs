@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::types::{
-    AgentInfo, AgentStatus, AgentType, EventFilter, MergeStrategy, ReviewScope, SessionId, Task,
-    TaskStatus,
+    AgentInfo, AgentStatus, AgentType, EventFilter, HookConfig, HookEvent, HookResult,
+    MergeStrategy, ReviewScope, SessionId, Task, TaskStatus,
 };
 
 pub const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
@@ -122,6 +122,18 @@ pub enum Request {
         /// New PTY rows.
         rows: u16,
     },
+    /// Run lifecycle hooks for an agent and event.
+    RunHooks {
+        /// Session identifier.
+        id: SessionId,
+        /// Hook event to trigger.
+        event: HookEvent,
+    },
+    /// List configured lifecycle hooks for an agent context.
+    ListHooks {
+        /// Session identifier.
+        id: SessionId,
+    },
     /// Forward-compatible fallback for unknown values.
     #[serde(other)]
     Unknown,
@@ -190,6 +202,16 @@ pub enum Response {
         status: AgentStatus,
         /// Whether the wait ended because the timeout expired.
         timed_out: bool,
+    },
+    /// Results from a lifecycle hook pipeline.
+    HookResults {
+        /// Hook results in execution order.
+        results: Vec<HookResult>,
+    },
+    /// Hook configuration snapshot.
+    HookConfigs {
+        /// Configured hooks in file order.
+        hooks: Vec<HookConfig>,
     },
     /// Generic success response.
     Ok,

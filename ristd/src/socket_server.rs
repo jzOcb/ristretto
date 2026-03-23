@@ -314,8 +314,8 @@ async fn dispatch_request(
             preview_only,
             strategy,
         } => {
-            let manager = pty_manager.lock().await;
             if *preview_only {
+                let manager = pty_manager.lock().await;
                 match manager.preview_merge(*id) {
                     Ok(preview) => Response::MergePreview {
                         diff: preview.diff,
@@ -326,14 +326,29 @@ async fn dispatch_request(
                     },
                 }
             } else {
-                match manager.merge_agent(
-                    *id,
-                    strategy.clone(),
-                    &format!("Squash merge agent {id:?}"),
-                ) {
-                    Ok(result) => Response::MergeResult {
-                        success: result.success,
-                        message: result.message,
+                let manager = pty_manager.lock().await;
+                match manager.run_hooks_with_outcome(*id, rist_shared::HookEvent::PreMerge) {
+                    Ok(outcome) if outcome.blocked => Response::Error {
+                        message: "pre-merge hook blocked merge".to_owned(),
+                    },
+                    Ok(_) => match manager.merge_agent(
+                        *id,
+                        strategy.clone(),
+                        &format!("Squash merge agent {id:?}"),
+                    ) {
+                        Ok(result) => {
+                            if result.success {
+                                let _ = manager
+                                    .run_hooks_with_outcome(*id, rist_shared::HookEvent::PostMerge);
+                            }
+                            Response::MergeResult {
+                                success: result.success,
+                                message: result.message,
+                            }
+                        }
+                        Err(error) => Response::Error {
+                            message: error.to_string(),
+                        },
                     },
                     Err(error) => Response::Error {
                         message: error.to_string(),
@@ -359,6 +374,24 @@ async fn dispatch_request(
             let mut manager = pty_manager.lock().await;
             match manager.resize(*id, *cols, *rows) {
                 Ok(()) => Response::Ok,
+                Err(error) => Response::Error {
+                    message: error.to_string(),
+                },
+            }
+        }
+        Request::RunHooks { id, event } => {
+            let manager = pty_manager.lock().await;
+            match manager.run_hooks(*id, event.clone()) {
+                Ok(results) => Response::HookResults { results },
+                Err(error) => Response::Error {
+                    message: error.to_string(),
+                },
+            }
+        }
+        Request::ListHooks { id } => {
+            let manager = pty_manager.lock().await;
+            match manager.list_hooks(*id) {
+                Ok(hooks) => Response::HookConfigs { hooks },
                 Err(error) => Response::Error {
                     message: error.to_string(),
                 },

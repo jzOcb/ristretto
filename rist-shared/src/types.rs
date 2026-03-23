@@ -219,6 +219,60 @@ pub enum EventFilter {
     Unknown,
 }
 
+/// Lifecycle hook trigger points.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HookEvent {
+    /// Before spawning an agent.
+    PreSpawn,
+    /// After an agent becomes idle following output.
+    PostOutput,
+    /// Before merging an agent worktree.
+    PreMerge,
+    /// After merging an agent worktree.
+    PostMerge,
+    /// When an agent appears stuck.
+    OnStuck,
+    /// Before rotating agent context.
+    OnRotation,
+    /// Forward-compatible fallback for unknown values.
+    #[serde(other)]
+    Unknown,
+}
+
+/// Hook configuration loaded from `.ristretto/hooks.toml`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HookConfig {
+    /// Trigger event for this hook.
+    pub event: HookEvent,
+    /// Shell command to execute.
+    pub command: String,
+    /// Whether failures should stop the remaining pipeline.
+    #[serde(default)]
+    pub blocking: bool,
+    /// Max execution time in seconds.
+    pub timeout_secs: u64,
+    /// Optional text to prepend to the agent task at spawn time.
+    #[serde(default)]
+    pub inject_context: Option<String>,
+    /// Optional debounce interval in seconds.
+    #[serde(default)]
+    pub min_interval_secs: Option<u64>,
+}
+
+/// Captured result from a hook execution.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HookResult {
+    /// Whether the hook completed successfully.
+    pub success: bool,
+    /// Captured standard output.
+    pub stdout: String,
+    /// Captured standard error.
+    pub stderr: String,
+    /// Total runtime in milliseconds.
+    pub duration_ms: u64,
+}
+
 /// Structured inter-agent message category.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -436,7 +490,8 @@ mod tests {
     use uuid::Uuid;
 
     use super::{
-        AgentStatus, AgentType, ContextUsage, MessageType, Priority, SessionId, Task, TaskStatus,
+        AgentStatus, AgentType, ContextUsage, HookConfig, HookEvent, HookResult, MessageType,
+        Priority, SessionId, Task, TaskStatus,
     };
 
     #[test]
@@ -511,5 +566,30 @@ mod tests {
         }))
         .expect_err("empty id must fail");
         assert!(error.to_string().contains("task id"));
+    }
+
+    #[test]
+    fn hook_types_roundtrip() {
+        let config = HookConfig {
+            event: HookEvent::PreSpawn,
+            command: "echo ready".to_owned(),
+            blocking: true,
+            timeout_secs: 5,
+            inject_context: Some("Follow repo rules.".to_owned()),
+            min_interval_secs: Some(30),
+        };
+        let encoded = serde_json::to_value(&config).expect("serialize config");
+        let decoded: HookConfig = serde_json::from_value(encoded).expect("deserialize config");
+        assert_eq!(decoded, config);
+
+        let result = HookResult {
+            success: true,
+            stdout: "ok".to_owned(),
+            stderr: String::new(),
+            duration_ms: 12,
+        };
+        let encoded = serde_json::to_value(&result).expect("serialize result");
+        let decoded: HookResult = serde_json::from_value(encoded).expect("deserialize result");
+        assert_eq!(decoded, result);
     }
 }
