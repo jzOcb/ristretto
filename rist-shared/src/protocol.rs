@@ -505,6 +505,7 @@ mod tests {
         AgentInfo {
             id: SessionId::new(),
             agent_type: AgentType::Codex,
+            model: None,
             task: "Implement tests".to_owned(),
             status: AgentStatus::Working,
             workdir: PathBuf::from("/tmp/project"),

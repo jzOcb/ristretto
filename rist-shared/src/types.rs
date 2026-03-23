@@ -489,6 +489,9 @@ pub struct AgentInfo {
     pub id: SessionId,
     /// Agent family.
     pub agent_type: AgentType,
+    /// Optional model identifier reserved for display.
+    #[serde(default)]
+    pub model: Option<String>,
     /// Human-readable task description.
     pub task: String,
     /// Current agent status.

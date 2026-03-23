@@ -213,6 +213,7 @@ impl PtyManager {
         let info = AgentInfo {
             id,
             agent_type: agent_type.clone(),
+            model: None,
             task: task.clone(),
             status: AgentStatus::Working,
             workdir: workdir.clone(),

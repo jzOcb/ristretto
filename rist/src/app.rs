@@ -1,9 +1,10 @@
 //! Application state for the Ristretto terminal client.
 
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 
 use rist_shared::protocol::Event;
-use rist_shared::{AgentInfo, AgentStatus, ContextBudget, SessionId};
+use rist_shared::{AgentInfo, AgentStatus, ContextBudget, SessionId, TaskGraph};
 
 use rist::daemon_client::{ClientEvent, DaemonClient};
 
@@ -13,6 +14,8 @@ pub struct App {
     pub agents: Vec<AgentInfo>,
     /// Index of the focused agent in [`Self::agents`].
     pub focused_agent: Option<usize>,
+    /// Active top-level presentation mode.
+    pub view_mode: ViewMode,
     /// Current panel arrangement.
     pub layout_mode: LayoutMode,
     /// Whether the task graph/status panel is expanded.
@@ -25,6 +28,18 @@ pub struct App {
     pub input_buffer: String,
     /// Cached output lines keyed by session id.
     pub agent_outputs: HashMap<SessionId, Vec<String>>,
+    /// Current planner task graph snapshot.
+    pub task_graph: TaskGraph,
+    /// Current daemon file ownership map.
+    pub file_ownership: HashMap<PathBuf, SessionId>,
+    /// Selected task id in graph mode.
+    pub selected_task: Option<String>,
+    /// Expanded task id whose terminal is visible in graph mode.
+    pub expanded_node: Option<String>,
+    /// Current graph scroll offset as `(horizontal, vertical)`.
+    pub dag_scroll: (i16, i16),
+    /// Whether the file ownership overlay is visible.
+    pub show_file_overlay: bool,
     /// Whether the main loop should keep running.
     pub running: bool,
     locale: String,
@@ -45,6 +60,17 @@ pub enum LayoutMode {
     Grid,
 }
 
+/// Available top-level UI modes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViewMode {
+    /// DAG-first task graph view.
+    Graph,
+    /// Classic v0.1 sidebar and panel layout.
+    List,
+    /// Full-screen terminal for the focused or selected agent.
+    Terminal,
+}
+
 /// Keyboard interaction mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputMode {
@@ -61,12 +87,22 @@ impl App {
         Self {
             agents: Vec::new(),
             focused_agent: None,
+            view_mode: ViewMode::Graph,
             layout_mode: LayoutMode::SidebarSingle,
             show_task_graph: false,
             show_help: false,
             input_mode: InputMode::Normal,
             input_buffer: String::new(),
             agent_outputs: HashMap::new(),
+            task_graph: TaskGraph {
+                tasks: Vec::new(),
+                updated_at: chrono::Utc::now(),
+            },
+            file_ownership: HashMap::new(),
+            selected_task: None,
+            expanded_node: None,
+            dag_scroll: (0, 0),
+            show_file_overlay: false,
             running: true,
             locale,
             status_message: String::new(),
@@ -92,6 +128,31 @@ impl App {
     #[must_use]
     pub fn focused_output(&self) -> Option<&[String]> {
         self.focused_agent_info()
+            .and_then(|agent| self.agent_outputs.get(&agent.id))
+            .map(Vec::as_slice)
+    }
+
+    /// Returns the graph-selected or expanded agent, if any task owns one.
+    #[must_use]
+    pub fn graph_agent_info(&self) -> Option<&AgentInfo> {
+        self.expanded_node
+            .as_deref()
+            .or(self.selected_task.as_deref())
+            .and_then(|task_id| {
+                self.task_graph
+                    .tasks
+                    .iter()
+                    .find(|task| task.id == task_id)
+                    .and_then(|task| task.owner)
+            })
+            .and_then(|owner| self.agents.iter().find(|agent| agent.id == owner))
+            .or_else(|| self.focused_agent_info())
+    }
+
+    /// Returns output for the graph-selected or expanded task owner.
+    #[must_use]
+    pub fn graph_output(&self) -> Option<&[String]> {
+        self.graph_agent_info()
             .and_then(|agent| self.agent_outputs.get(&agent.id))
             .map(Vec::as_slice)
     }
@@ -135,6 +196,31 @@ impl App {
         };
     }
 
+    /// Replaces the task graph snapshot and keeps graph selection valid.
+    pub fn refresh_task_graph(&mut self, task_graph: TaskGraph) {
+        self.task_graph = task_graph;
+
+        let contains_task =
+            |task_id: &str| self.task_graph.tasks.iter().any(|task| task.id == task_id);
+        if self.selected_task.as_deref().is_some_and(contains_task) {
+            return;
+        }
+
+        self.selected_task = self.task_graph.tasks.first().map(|task| task.id.clone());
+        if self
+            .expanded_node
+            .as_deref()
+            .is_some_and(|task_id| !contains_task(task_id))
+        {
+            self.expanded_node = None;
+        }
+    }
+
+    /// Replaces the file ownership snapshot.
+    pub fn refresh_file_ownership(&mut self, file_ownership: HashMap<PathBuf, SessionId>) {
+        self.file_ownership = file_ownership;
+    }
+
     /// Refreshes the cached output for the visible agent panes.
     pub async fn refresh_visible_outputs(&mut self, client: &DaemonClient) {
         if let Some(agent) = self.focused_agent_info() {
@@ -143,6 +229,11 @@ impl App {
             }
         }
         if let Some(agent) = self.split_agent_info() {
+            if let Ok(lines) = client.get_output(agent.id, 200).await {
+                self.replace_output(agent.id, lines);
+            }
+        }
+        if let Some(agent) = self.graph_agent_info() {
             if let Ok(lines) = client.get_output(agent.id, 200).await {
                 self.replace_output(agent.id, lines);
             }
@@ -157,6 +248,11 @@ impl App {
             }
         }
         if let Some(agent) = self.split_agent_info() {
+            if let Ok(budget) = client.get_context_budget(agent.id).await {
+                self.context_budgets.insert(agent.id, budget);
+            }
+        }
+        if let Some(agent) = self.graph_agent_info() {
             if let Ok(budget) = client.get_context_budget(agent.id).await {
                 self.context_budgets.insert(agent.id, budget);
             }
@@ -230,6 +326,176 @@ impl App {
             Some(index) => (index + 1) % self.agents.len(),
             None => 0,
         });
+    }
+
+    /// Returns task ids grouped by depth with their top-left positions.
+    #[must_use]
+    pub fn compute_dag_layout(&self, task_graph: &TaskGraph) -> Vec<Vec<(String, (u16, u16))>> {
+        let mut task_map = HashMap::new();
+        let mut indegree = HashMap::new();
+        let mut adjacency: HashMap<&str, Vec<&str>> = HashMap::new();
+
+        for task in &task_graph.tasks {
+            task_map.insert(task.id.as_str(), task);
+            indegree.insert(task.id.as_str(), 0usize);
+            adjacency.entry(task.id.as_str()).or_default();
+        }
+
+        for task in &task_graph.tasks {
+            for dep in &task.depends_on {
+                if task_map.contains_key(dep.as_str()) {
+                    *indegree.entry(task.id.as_str()).or_default() += 1;
+                    adjacency
+                        .entry(dep.as_str())
+                        .or_default()
+                        .push(task.id.as_str());
+                }
+            }
+        }
+
+        let mut frontier = indegree
+            .iter()
+            .filter_map(|(task_id, degree)| (*degree == 0).then_some(*task_id))
+            .collect::<Vec<_>>();
+        frontier.sort_unstable();
+
+        let mut levels = Vec::new();
+        let mut seen = HashSet::new();
+        while !frontier.is_empty() {
+            let current = std::mem::take(&mut frontier);
+            let mut current_level = current;
+            current_level.sort_unstable();
+
+            let mut next = Vec::new();
+            for task_id in current_level.iter().copied() {
+                seen.insert(task_id);
+                if let Some(children) = adjacency.get(task_id) {
+                    for child in children {
+                        if let Some(value) = indegree.get_mut(child) {
+                            *value = value.saturating_sub(1);
+                            if *value == 0 {
+                                next.push(*child);
+                            }
+                        }
+                    }
+                }
+            }
+
+            let depth = levels.len() as u16;
+            let column = current_level
+                .iter()
+                .enumerate()
+                .map(|(row, task_id)| {
+                    (
+                        (*task_id).to_owned(),
+                        (depth.saturating_mul(18), row as u16 * 6),
+                    )
+                })
+                .collect::<Vec<_>>();
+            levels.push(column);
+
+            next.sort_unstable();
+            next.dedup();
+            frontier = next;
+        }
+
+        let mut unresolved = task_graph
+            .tasks
+            .iter()
+            .filter(|task| !seen.contains(task.id.as_str()))
+            .map(|task| task.id.clone())
+            .collect::<Vec<_>>();
+        unresolved.sort();
+        if !unresolved.is_empty() {
+            let depth = levels.len() as u16;
+            levels.push(
+                unresolved
+                    .into_iter()
+                    .enumerate()
+                    .map(|(row, task_id)| (task_id, (depth.saturating_mul(18), row as u16 * 6)))
+                    .collect(),
+            );
+        }
+
+        levels
+    }
+
+    /// Selects the next task in topological order.
+    pub fn cycle_task_selection(&mut self, forward: bool) {
+        let ordered = self
+            .compute_dag_layout(&self.task_graph)
+            .into_iter()
+            .flatten()
+            .map(|(task_id, _)| task_id)
+            .collect::<Vec<_>>();
+        if ordered.is_empty() {
+            self.selected_task = None;
+            return;
+        }
+
+        let index = self
+            .selected_task
+            .as_ref()
+            .and_then(|task_id| ordered.iter().position(|candidate| candidate == task_id))
+            .unwrap_or(0);
+        let next_index = if forward {
+            (index + 1) % ordered.len()
+        } else if index == 0 {
+            ordered.len() - 1
+        } else {
+            index - 1
+        };
+        self.selected_task = Some(ordered[next_index].clone());
+    }
+
+    /// Moves graph selection by one column or row.
+    pub fn move_task_selection(&mut self, delta_x: i16, delta_y: i16) {
+        let layout = self.compute_dag_layout(&self.task_graph);
+        let selected = self.selected_task.clone().or_else(|| {
+            layout
+                .first()
+                .and_then(|column| column.first().map(|(task_id, _)| task_id.clone()))
+        });
+        let Some(selected) = selected else {
+            self.selected_task = None;
+            return;
+        };
+
+        let mut location = None;
+        for (column_index, column) in layout.iter().enumerate() {
+            if let Some(row_index) = column.iter().position(|(task_id, _)| *task_id == selected) {
+                location = Some((column_index, row_index));
+                break;
+            }
+        }
+
+        let Some((column_index, row_index)) = location else {
+            self.selected_task = layout
+                .first()
+                .and_then(|column| column.first().map(|(task_id, _)| task_id.clone()));
+            return;
+        };
+
+        let target_column = (column_index as i16 + delta_x)
+            .clamp(0, layout.len().saturating_sub(1) as i16) as usize;
+        let target_rows = &layout[target_column];
+        let target_row = (row_index as i16 + delta_y)
+            .clamp(0, target_rows.len().saturating_sub(1) as i16) as usize;
+        self.selected_task = Some(target_rows[target_row].0.clone());
+    }
+
+    /// Expands or collapses the selected node terminal.
+    pub fn toggle_expanded_node(&mut self) {
+        self.expanded_node = match (&self.expanded_node, &self.selected_task) {
+            (Some(expanded), Some(selected)) if expanded == selected => None,
+            (_, Some(selected)) => Some(selected.clone()),
+            _ => None,
+        };
+    }
+
+    /// Collapses the graph terminal pane.
+    pub fn collapse_expanded_node(&mut self) {
+        self.expanded_node = None;
     }
 
     /// Toggles the split layout.
@@ -336,6 +602,15 @@ impl App {
                     budget.tool_output_percentage(),
                 )
             },
+        )
+    }
+
+    /// Returns a short context summary suitable for compact graph nodes.
+    #[must_use]
+    pub fn compact_context_line(&self, id: SessionId) -> String {
+        self.context_budgets.get(&id).map_or_else(
+            || "ctx: n/a".to_owned(),
+            |budget| format!("ctx: {:.0}%", budget.total_percentage()),
         )
     }
 }
@@ -458,12 +733,13 @@ mod tests {
     use rist_shared::{AgentInfo, AgentStatus, AgentType, SessionId, TaskStatus};
     use serde_json::json;
 
-    use super::{App, LayoutMode};
+    use super::{App, LayoutMode, ViewMode};
 
     fn sample_agent(task: &str) -> AgentInfo {
         serde_json::from_value(json!({
             "id": SessionId::new(),
             "agent_type": AgentType::Codex,
+            "model": null,
             "task": task,
             "status": AgentStatus::Idle,
             "workdir": PathBuf::from("/tmp"),
@@ -488,6 +764,12 @@ mod tests {
         assert_eq!(app.layout_mode, LayoutMode::Grid);
         app.toggle_split();
         assert_eq!(app.layout_mode, LayoutMode::SidebarSingle);
+    }
+
+    #[test]
+    fn app_starts_in_graph_view() {
+        let app = App::new("en".to_owned());
+        assert_eq!(app.view_mode, ViewMode::Graph);
     }
 
     #[test]
@@ -553,5 +835,45 @@ mod tests {
             app.agent_outputs.get(&id),
             Some(&vec!["hello 😀".to_owned()])
         );
+    }
+
+    #[test]
+    fn compute_dag_layout_groups_tasks_left_to_right() {
+        let mut app = App::new("en".to_owned());
+        app.refresh_task_graph(rist_shared::TaskGraph {
+            tasks: vec![
+                serde_json::from_value(json!({
+                    "id": "t1",
+                    "title": "Start",
+                    "description": null,
+                    "status": "pending",
+                    "priority": "medium",
+                    "agent_type": null,
+                    "owner": null,
+                    "depends_on": [],
+                    "file_ownership": []
+                }))
+                .expect("task"),
+                serde_json::from_value(json!({
+                    "id": "t2",
+                    "title": "Finish",
+                    "description": null,
+                    "status": "pending",
+                    "priority": "medium",
+                    "agent_type": null,
+                    "owner": null,
+                    "depends_on": ["t1"],
+                    "file_ownership": []
+                }))
+                .expect("task"),
+            ],
+            updated_at: chrono::Utc::now(),
+        });
+
+        let layout = app.compute_dag_layout(&app.task_graph);
+        assert_eq!(layout.len(), 2);
+        assert_eq!(layout[0][0].0, "t1");
+        assert_eq!(layout[1][0].0, "t2");
+        assert!(layout[1][0].1 .0 > layout[0][0].1 .0);
     }
 }

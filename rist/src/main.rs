@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use app::App;
+use chrono::Utc;
 use clap::Parser;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -18,6 +19,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use rist::daemon_client::DaemonClient;
 use rist_shared::i18n::tr;
+use rist_shared::TaskGraph;
 use tokio::runtime::Builder;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::time::MissedTickBehavior;
@@ -105,6 +107,11 @@ async fn run(args: Args) -> io::Result<()> {
 
     app.set_status_message(tr("tui.help"));
     app.refresh_agents(client.list_agents().await?);
+    app.refresh_task_graph(TaskGraph {
+        tasks: client.read_task_graph().await?,
+        updated_at: Utc::now(),
+    });
+    app.refresh_file_ownership(client.get_file_ownership().await?);
     app.refresh_visible_outputs(&client).await;
     app.refresh_visible_context_budgets(&client).await;
 
@@ -142,6 +149,15 @@ async fn run(args: Args) -> io::Result<()> {
                 match client.list_agents().await {
                     Ok(agents) => app.refresh_agents(agents),
                     Err(error) => app.set_status_message(format!("daemon: {error}")),
+                }
+                if let Ok(tasks) = client.read_task_graph().await {
+                    app.refresh_task_graph(TaskGraph {
+                        tasks,
+                        updated_at: Utc::now(),
+                    });
+                }
+                if let Ok(map) = client.get_file_ownership().await {
+                    app.refresh_file_ownership(map);
                 }
             }
             _ = output_tick.tick() => {
