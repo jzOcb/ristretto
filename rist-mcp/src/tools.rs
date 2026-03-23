@@ -734,10 +734,22 @@ mod tests {
             file_ownership: vec![PathBuf::from("src/main.rs")],
         });
 
-        assert_eq!(value.get("description").and_then(Value::as_str), Some("Detailed work"));
-        assert_eq!(value.get("agent_type").and_then(Value::as_str), Some("planner"));
-        assert_eq!(value.get("status").and_then(Value::as_str), Some("assigned"));
-        assert_eq!(value.get("priority").and_then(Value::as_str), Some("critical"));
+        assert_eq!(
+            value.get("description").and_then(Value::as_str),
+            Some("Detailed work")
+        );
+        assert_eq!(
+            value.get("agent_type").and_then(Value::as_str),
+            Some("planner")
+        );
+        assert_eq!(
+            value.get("status").and_then(Value::as_str),
+            Some("assigned")
+        );
+        assert_eq!(
+            value.get("priority").and_then(Value::as_str),
+            Some("critical")
+        );
     }
 
     #[test]

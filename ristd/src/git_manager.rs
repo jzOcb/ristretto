@@ -356,13 +356,7 @@ mod tests {
         repo.branch(branch, &commit, false).expect("branch");
     }
 
-    fn commit_file(
-        repo: &Repository,
-        path: &Path,
-        rel_path: &str,
-        contents: &str,
-        message: &str,
-    ) {
+    fn commit_file(repo: &Repository, path: &Path, rel_path: &str, contents: &str, message: &str) {
         fs::write(path.join(rel_path), contents).expect("write");
         let mut index = repo.index().expect("index");
         index.add_path(Path::new(rel_path)).expect("add");
@@ -428,7 +422,13 @@ mod tests {
         create_branch(&repo, "feature");
 
         checkout(dir.path(), "feature");
-        commit_file(&repo, dir.path(), "feature.txt", "hello from feature\n", "feature");
+        commit_file(
+            &repo,
+            dir.path(),
+            "feature.txt",
+            "hello from feature\n",
+            "feature",
+        );
         checkout(dir.path(), "main");
 
         let conflicts = GitManager::detect_conflicts(dir.path(), "feature").expect("conflicts");

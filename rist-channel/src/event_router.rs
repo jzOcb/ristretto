@@ -260,7 +260,10 @@ mod tests {
                 new: AgentStatus::Done,
             }
         ));
-        assert!(!filter_matches_event(&EventFilter::Unknown, &Event::Unknown));
+        assert!(!filter_matches_event(
+            &EventFilter::Unknown,
+            &Event::Unknown
+        ));
         assert!(filter_matches_event(&EventFilter::All, &Event::Unknown));
     }
 
