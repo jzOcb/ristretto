@@ -14,7 +14,9 @@ use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
 use rist_shared::protocol::{
     decode_frame_async, encode_frame_async, Event, Request, Response, MAX_FRAME_BYTES,
 };
-use rist_shared::{AgentInfo, AgentStatus, AgentType, EventFilter, MergeStrategy, SessionId, Task};
+use rist_shared::{
+    AgentInfo, AgentStatus, AgentType, ContextBudget, EventFilter, MergeStrategy, SessionId, Task,
+};
 
 /// Daemon-side updates forwarded to the TUI.
 #[derive(Debug, Clone)]
@@ -226,6 +228,14 @@ impl DaemonClient {
                 exit_code,
             } => Ok((stdout, stderr, exit_code)),
             other => unexpected_response("run_command", other),
+        }
+    }
+
+    /// Returns the context-budget breakdown for a session.
+    pub async fn get_context_budget(&self, id: SessionId) -> io::Result<ContextBudget> {
+        match self.request(Request::GetContextBudget { id }).await? {
+            Response::ContextBudget { budget } => Ok(budget),
+            other => unexpected_response("get_context_budget", other),
         }
     }
 

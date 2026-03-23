@@ -14,8 +14,10 @@ use nix::sys::signal::{kill, Signal};
 use nix::unistd::Pid;
 use portable_pty::{native_pty_system, Child, MasterPty, PtySize};
 use rist_shared::protocol::Event;
-use rist_shared::{AgentInfo, AgentStatus, AgentType, ContextUsage, MergeStrategy, SessionId};
-use tracing::error;
+use rist_shared::{
+    AgentInfo, AgentStatus, AgentType, ContextBudget, ContextUsage, MergeStrategy, SessionId,
+};
+use tracing::{error, warn};
 
 use crate::agent_adapter::{
     agent_type_key, AgentAdapter, ClaudeCodeAdapter, CodexAdapter, DefaultAdapter, GeminiAdapter,
@@ -24,6 +26,7 @@ use crate::context_injector::generate_context_file;
 use crate::context_monitor::ContextMonitor;
 use crate::file_ownership::FileOwnership;
 use crate::git_manager::{GitManager, MergePreview, MergeResult};
+use crate::output_filter::OutputFilter;
 use crate::recovery::{RecoveryAction, RecoveryManager};
 use crate::review_engine::ReviewRequest;
 use crate::ring_buffer::RingBuffer;
@@ -38,6 +41,8 @@ const RECENT_OUTPUT_LIMIT: usize = 64;
 struct SessionTelemetry {
     total_output_bytes: usize,
     recent_lines: VecDeque<String>,
+    raw_tool_output_bytes: u64,
+    filtered_tool_output_bytes: u64,
 }
 
 struct PtySession {
@@ -527,7 +532,11 @@ impl PtyManager {
     }
 
     /// Runs `command` inside the agent worktree and captures its output.
-    pub fn run_command(&self, id: SessionId, command: &str) -> io::Result<(String, String, i32)> {
+    pub fn run_command(
+        &mut self,
+        id: SessionId,
+        command: &str,
+    ) -> io::Result<(String, String, i32)> {
         let info = self.agent_info(id)?;
         let argv = split_command_line(command)?;
         let (program, args) = argv
@@ -538,11 +547,40 @@ impl PtyManager {
             .current_dir(&info.workdir)
             .output()?;
         let exit_code = output.status.code().unwrap_or_default();
-        Ok((
-            String::from_utf8_lossy(&output.stdout).into_owned(),
-            String::from_utf8_lossy(&output.stderr).into_owned(),
-            exit_code,
-        ))
+        let filter = OutputFilter::load_or_default(&info.workdir);
+        let filtered = filter.filter_command(command, &output.stdout, &output.stderr, exit_code);
+        if let Some(session) = self.sessions.get(&id) {
+            if let Ok(mut telemetry) = session.telemetry.lock() {
+                telemetry.raw_tool_output_bytes = telemetry
+                    .raw_tool_output_bytes
+                    .saturating_add(filtered.stats.raw_bytes);
+                telemetry.filtered_tool_output_bytes = telemetry
+                    .filtered_tool_output_bytes
+                    .saturating_add(filtered.stats.filtered_bytes);
+            } else {
+                warn!("telemetry mutex poisoned while recording tool output for session {id:?}");
+            }
+        }
+        Ok((filtered.stdout, filtered.stderr, exit_code))
+    }
+
+    /// Returns the current context-budget breakdown for a session.
+    pub fn get_context_budget(&self, id: SessionId) -> io::Result<ContextBudget> {
+        let info = self.agent_info(id)?;
+        let filtered_tool_output_bytes = self
+            .sessions
+            .get(&id)
+            .and_then(|session| {
+                session
+                    .telemetry
+                    .lock()
+                    .ok()
+                    .map(|telemetry| telemetry.filtered_tool_output_bytes)
+            })
+            .unwrap_or(0);
+        Ok(self
+            .context_monitor
+            .context_budget(info, filtered_tool_output_bytes))
     }
 
     /// Checks active agents for context pressure and recoverable unhealthy states.
@@ -588,18 +626,28 @@ impl PtyManager {
                 }
             };
             let usage_pct = context_monitor.estimate_usage(&session.info, &buffer_snapshot);
+            let budget = session
+                .telemetry
+                .lock()
+                .ok()
+                .map(|telemetry| {
+                    context_monitor
+                        .context_budget(&session.info, telemetry.filtered_tool_output_bytes)
+                })
+                .unwrap_or_else(|| context_monitor.context_budget(&session.info, 0));
+            let percentage = usage_pct.max(budget.total_percentage());
             session.info.context_usage = Some(ContextUsage {
-                estimated_tokens: u64::try_from(total_output_bytes / 4).unwrap_or(u64::MAX),
-                max_tokens: default_context_tokens(&session.info.agent_type),
-                percentage: usage_pct,
+                estimated_tokens: budget.total_tokens(),
+                max_tokens: budget.max_context,
+                percentage,
             });
-            if context_monitor.should_rotate(usage_pct) {
+            if context_monitor.should_rotate(percentage) {
                 if !session.context_warning_sent {
                     push_event(
                         &pending_events,
                         Event::ContextWarning {
                             id: session.info.id,
-                            usage_pct,
+                            usage_pct: percentage,
                         },
                     );
                     session.context_warning_sent = true;
@@ -855,15 +903,6 @@ fn repo_path_from_info(info: &AgentInfo) -> io::Result<PathBuf> {
         .get("repo_path")
         .map(PathBuf::from)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "agent has no repository"))
-}
-
-fn default_context_tokens(agent_type: &AgentType) -> u64 {
-    match agent_type {
-        AgentType::Claude => 200_000,
-        AgentType::Codex => 192_000,
-        AgentType::Gemini => 1_000_000,
-        AgentType::Custom(_) | AgentType::Unknown => 128_000,
-    }
 }
 
 fn git_diff_name_only(repo_path: &Path, branch: &str) -> io::Result<Vec<PathBuf>> {

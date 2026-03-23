@@ -116,6 +116,18 @@ pub fn tool_definitions() -> Vec<Value> {
             }),
         ),
         tool(
+            "context_budget",
+            "Read the context budget breakdown for an agent session.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "session_id": { "type": "string" }
+                },
+                "required": ["session_id"],
+                "additionalProperties": false
+            }),
+        ),
+        tool(
             "read_task_graph",
             "Read the current task graph.",
             empty_schema(),
@@ -288,6 +300,24 @@ pub async fn handle_tool_call(
                 "stdout": stdout,
                 "stderr": stderr,
                 "exit_code": exit_code,
+            }))
+        }
+        "context_budget" => {
+            let session_id = parse_session_id(required_str(&arguments, "session_id")?)?;
+            let budget = client
+                .get_context_budget(session_id)
+                .await
+                .map_err(|error| error.to_string())?;
+            Ok(json!({
+                "max_context": budget.max_context,
+                "injected_tokens": budget.injected_tokens,
+                "mcp_overhead_tokens": budget.mcp_overhead_tokens,
+                "tool_output_tokens": budget.tool_output_tokens,
+                "alerts": budget.alerts,
+                "total_percentage": budget.total_percentage(),
+                "injected_percentage": budget.injected_percentage(),
+                "mcp_percentage": budget.mcp_percentage(),
+                "tool_output_percentage": budget.tool_output_percentage(),
             }))
         }
         "read_task_graph" => {

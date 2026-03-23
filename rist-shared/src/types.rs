@@ -265,6 +265,139 @@ impl Serialize for ContextUsage {
     }
 }
 
+/// Output filtering mode for command responses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FilterMode {
+    /// Command-aware filtering and summarization.
+    Smart,
+    /// Keep the first `max_lines` lines.
+    Head,
+    /// Keep the last `max_lines` lines.
+    Tail,
+    /// Do not truncate or summarize output.
+    None,
+}
+
+/// Filter rule applied to matching command strings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FilterRule {
+    /// Glob-style command pattern.
+    pub pattern: String,
+    /// Filtering strategy.
+    #[serde(default)]
+    pub mode: Option<FilterMode>,
+    /// Optional line budget override.
+    #[serde(default)]
+    pub max_lines: Option<usize>,
+}
+
+/// Command-output filtering configuration loaded from `filters.toml`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FilterConfig {
+    /// Default line budget for unmatched commands.
+    pub max_lines: usize,
+    /// Ordered rule list.
+    #[serde(default)]
+    pub filters: Vec<FilterRule>,
+}
+
+impl Default for FilterConfig {
+    fn default() -> Self {
+        Self {
+            max_lines: 200,
+            filters: vec![
+                FilterRule {
+                    pattern: "cargo test*".to_owned(),
+                    mode: Some(FilterMode::Smart),
+                    max_lines: None,
+                },
+                FilterRule {
+                    pattern: "cargo clippy*".to_owned(),
+                    mode: Some(FilterMode::Smart),
+                    max_lines: None,
+                },
+                FilterRule {
+                    pattern: "cargo build*".to_owned(),
+                    mode: Some(FilterMode::Smart),
+                    max_lines: None,
+                },
+                FilterRule {
+                    pattern: "git log*".to_owned(),
+                    mode: Some(FilterMode::Tail),
+                    max_lines: Some(20),
+                },
+                FilterRule {
+                    pattern: "git diff*".to_owned(),
+                    mode: Some(FilterMode::Head),
+                    max_lines: Some(200),
+                },
+            ],
+        }
+    }
+}
+
+/// Raw vs filtered byte counts for a command execution.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OutputStats {
+    /// Bytes captured before filtering.
+    pub raw_bytes: u64,
+    /// Bytes returned after filtering.
+    pub filtered_bytes: u64,
+    /// Whether a filter or summary changed the output.
+    pub filter_applied: bool,
+}
+
+/// Estimated context-budget breakdown for an agent session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextBudget {
+    /// Task text, context injection, and `HANDOFF.md`.
+    pub injected_tokens: u64,
+    /// Estimated MCP tool-schema overhead.
+    pub mcp_overhead_tokens: u64,
+    /// Cumulative post-filter tool output.
+    pub tool_output_tokens: u64,
+    /// Maximum supported context for the agent family.
+    pub max_context: u64,
+    /// Human-readable warnings for disproportionate usage.
+    #[serde(default)]
+    pub alerts: Vec<String>,
+}
+
+impl ContextBudget {
+    /// Returns the total estimated tokens consumed by tracked sources.
+    #[must_use]
+    pub fn total_tokens(&self) -> u64 {
+        self.injected_tokens
+            .saturating_add(self.mcp_overhead_tokens)
+            .saturating_add(self.tool_output_tokens)
+    }
+
+    /// Returns total usage percentage in the `[0.0, 100.0]` range.
+    #[must_use]
+    pub fn total_percentage(&self) -> f64 {
+        percentage(self.total_tokens(), self.max_context)
+    }
+
+    /// Returns injected-context percentage.
+    #[must_use]
+    pub fn injected_percentage(&self) -> f64 {
+        percentage(self.injected_tokens, self.max_context)
+    }
+
+    /// Returns MCP-overhead percentage.
+    #[must_use]
+    pub fn mcp_percentage(&self) -> f64 {
+        percentage(self.mcp_overhead_tokens, self.max_context)
+    }
+
+    /// Returns tool-output percentage.
+    #[must_use]
+    pub fn tool_output_percentage(&self) -> f64 {
+        percentage(self.tool_output_tokens, self.max_context)
+    }
+}
+
 impl<'de> Deserialize<'de> for ContextUsage {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -428,6 +561,14 @@ fn validate_task_id(id: &str) -> Result<(), &'static str> {
         return Err("task id must not be empty");
     }
     Ok(())
+}
+
+fn percentage(value: u64, max: u64) -> f64 {
+    if max == 0 {
+        0.0
+    } else {
+        ((value as f64 / max as f64) * 100.0).clamp(0.0, 100.0)
+    }
 }
 
 #[cfg(test)]
