@@ -21,10 +21,14 @@ Ristretto solves that by putting a daemon in the middle. `ristd` manages isolate
 - 🔄 Context rotation at 80%: cache-friendly agent management
 - 🔍 Cross-model review: adversarial review between different models
 - 🔧 Auto-recovery: stuck/loop detection with nudge → restart → escalate
-- 📡 MCP server: 12 tools for programmatic orchestration
+- 📡 MCP server: 17 tools for programmatic orchestration
 - 📢 Push events: real-time notifications via MCP channel, webhooks, files
 - 🌐 Bilingual: English + Chinese from Day 1
 - ⚡ Rust: zero-GC daemon, portable-pty, <10ms IPC
+- 🪝 Lifecycle hooks: 6 events, pipeline execution, debounce, context injection
+- 🔽 Output filtering: smart truncation for cargo test/clippy/build/git
+- 📊 Context budget: injected/MCP/tool output breakdown with threshold alerts
+- 📋 HANDOFF.md: auto-generated on context rotation for session continuity
 
 ## Architecture
 
@@ -79,6 +83,11 @@ To build from source today, see [Development](#development).
 | `write_task_graph` | Replace the shared task graph with an updated plan. |
 | `get_file_ownership` | Inspect the live file-to-agent ownership map. |
 | `merge_agent` | Preview or execute merge of an agent branch back into the main line. |
+| `context_budget` | Read context budget breakdown for an agent session. |
+| `run_hooks` | Manually trigger lifecycle hooks for a specific event. |
+| `list_hooks` | List configured lifecycle hooks for an agent session. |
+| `handoff_status` | Check handoff state for a session. |
+| `handoff_inject` | Re-queue stored handoff for injection on next spawn. |
 
 ## Key Concepts
 
@@ -102,17 +111,53 @@ One model writes, another model reviews. That adversarial loop catches weak assu
 
 Agents get stuck. Ristretto watches for loops, stalls, and dead sessions, then applies a recovery ladder: nudge first, restart second, escalate only when automation fails.
 
+### Lifecycle Hooks
+
+Configured via `.ristretto/hooks.toml`. 6 events: `pre_spawn`, `post_output`, `pre_merge`, `post_merge`, `on_stuck`, `on_rotation`. Multiple hooks per event run as a pipeline (fail-fast when blocking). Supports debounce (`min_interval_secs`), context injection (`inject_context`), and audit logging to `.ristretto/hook-audit.jsonl`.
+
+Example:
+
+```toml
+[[hooks]]
+event = "pre_merge"
+command = "cargo test && cargo clippy -- -D warnings"
+blocking = true
+timeout_secs = 120
+inject_context = "CRITICAL: All tests must pass before merge"
+```
+
+### Output Filtering
+
+Configured via `.ristretto/filters.toml`. Smart truncation for noisy output:
+
+- `cargo test` success → one-line summary; failure → full backtrace
+- `cargo clippy` clean → "✓ no warnings"; warnings → full output
+- `cargo build` success → "✓ compiled successfully"
+- `git log/diff` → configurable max entries/lines
+- Unknown commands → tail truncation at configurable `max_lines` (default 200)
+
+### Context Budget
+
+Tracks token usage breakdown: injected tokens (task prompt, `RISTRETTO.md`, `HANDOFF.md`), MCP overhead (tool schemas), and tool output tokens. Alerts when MCP > 12.5%, tool output > 15%, or injected > 5% of max context. Exposed via `context_budget` MCP tool.
+
+### HANDOFF.md
+
+On context rotation, the daemon prompts the agent to write a `HANDOFF.md` with current state, decisions, and next steps. Falls back to auto-generation from `PROGRESS.md` + recent output on timeout. The handoff is automatically injected into the next agent spawned in the same worktree.
+
 ## Configuration
 
-Ristretto stores runtime state and user config under `~/.ristretto/`.
+Ristretto splits configuration between user-global state in `~/.ristretto/` and project-local settings in `.ristretto/` at the repo root.
 
 - `~/.ristretto/config.toml`: daemon configuration
 - `~/.ristretto/channel.toml`: event routing for `rist-channel`
 - `~/.ristretto/daemon.sock`: Unix socket used by `rist`, `rist-mcp`, and `rist-channel`
 - `~/.ristretto/sessions.json`: persisted session metadata
 - `~/.ristretto/task_graph.json`: persisted planner state
+- `.ristretto/hooks.toml`: lifecycle hook definitions (project-local)
+- `.ristretto/filters.toml`: output filter rules (project-local)
+- `.ristretto/hook-audit.jsonl`: hook execution audit log (auto-generated)
 
-Typical settings include socket path overrides, logging level, event routing, and task/session persistence.
+Typical settings include socket path overrides, logging level, event routing, task/session persistence, lifecycle automation, and output filtering.
 
 ## Development
 
