@@ -201,7 +201,7 @@ mod tests {
                 .and_then(|value| value.get("tools"))
                 .and_then(Value::as_array)
                 .map(Vec::len),
-            Some(14)
+            Some(15)
         );
     }
 }

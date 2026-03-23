@@ -3,9 +3,11 @@
 use std::fs;
 use std::path::PathBuf;
 
-use rist_shared::AgentInfo;
+use rist_shared::{AgentInfo, AgentType, ContextBudget};
 
 const DEFAULT_ROTATION_THRESHOLD: f64 = 80.0;
+const DEFAULT_MCP_TOOL_COUNT: u64 = 13;
+const DEFAULT_MCP_SCHEMA_BYTES: u64 = 512;
 const PROGRESS_FILE_NAME: &str = "PROGRESS.md";
 
 /// Monitors agent context usage and prepares rotation prompts.
@@ -59,6 +61,49 @@ impl ContextMonitor {
     #[must_use]
     pub fn should_rotate(&self, usage_pct: f64) -> bool {
         usage_pct >= self.rotation_threshold
+    }
+
+    /// Computes a context budget breakdown for an agent.
+    #[must_use]
+    pub fn context_budget(
+        &self,
+        agent: &AgentInfo,
+        filtered_tool_output_bytes: u64,
+    ) -> ContextBudget {
+        let injected_tokens = self.injected_tokens(agent);
+        let mcp_overhead_tokens = self.mcp_overhead_tokens(agent);
+        let tool_output_tokens = bytes_to_tokens(filtered_tool_output_bytes);
+        let max_context = default_max_tokens(agent);
+
+        let mut budget = ContextBudget {
+            injected_tokens,
+            mcp_overhead_tokens,
+            tool_output_tokens,
+            max_context,
+            alerts: Vec::new(),
+        };
+        budget.alerts = self.alerts_for(&budget);
+        budget
+    }
+
+    /// Generates threshold-based warnings for a budget snapshot.
+    #[must_use]
+    pub fn alerts_for(&self, budget: &ContextBudget) -> Vec<String> {
+        let mut alerts = Vec::new();
+        if budget.mcp_percentage() > 12.5 {
+            alerts.push("warning: MCP overhead exceeds 12.5% of max context".to_owned());
+        }
+        if budget.tool_output_percentage() > 15.0 {
+            alerts.push(
+                "suggestion: tool output exceeds 15%; enable stronger output filtering".to_owned(),
+            );
+        }
+        if budget.injected_percentage() > 5.0 {
+            alerts.push(
+                "suggestion: injected context exceeds 5%; review context injection".to_owned(),
+            );
+        }
+        alerts
     }
 
     /// Generates a context rotation prompt that preserves task state and next steps.
@@ -138,11 +183,44 @@ impl Default for ContextMonitor {
 
 fn default_max_tokens(agent: &AgentInfo) -> u64 {
     match &agent.agent_type {
-        rist_shared::AgentType::Claude => 200_000,
-        rist_shared::AgentType::Codex => 192_000,
-        rist_shared::AgentType::Gemini => 1_000_000,
-        rist_shared::AgentType::Custom(_) | rist_shared::AgentType::Unknown => 128_000,
+        AgentType::Claude => 200_000,
+        AgentType::Codex => 256_000,
+        AgentType::Gemini => 1_000_000,
+        AgentType::Custom(_) | AgentType::Unknown => 200_000,
     }
+}
+
+fn bytes_to_tokens(bytes: u64) -> u64 {
+    (bytes.saturating_add(3)) / 4
+}
+
+impl ContextMonitor {
+    fn injected_tokens(&self, agent: &AgentInfo) -> u64 {
+        bytes_to_tokens(u64::try_from(agent.task.len()).unwrap_or(u64::MAX))
+            .saturating_add(file_token_estimate(agent.workdir.join("RISTRETTO.md")))
+            .saturating_add(file_token_estimate(agent.workdir.join("HANDOFF.md")))
+    }
+
+    fn mcp_overhead_tokens(&self, agent: &AgentInfo) -> u64 {
+        let tool_count = agent
+            .metadata
+            .get("mcp_tool_count")
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(DEFAULT_MCP_TOOL_COUNT);
+        let avg_schema_bytes = agent
+            .metadata
+            .get("mcp_avg_schema_bytes")
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(DEFAULT_MCP_SCHEMA_BYTES);
+        bytes_to_tokens(tool_count.saturating_mul(avg_schema_bytes))
+    }
+}
+
+fn file_token_estimate(path: PathBuf) -> u64 {
+    fs::read(path)
+        .ok()
+        .map(|bytes| bytes_to_tokens(u64::try_from(bytes.len()).unwrap_or(u64::MAX)))
+        .unwrap_or(0)
 }
 
 fn percentage_after_phrase(text: &str, phrase: &str) -> Option<f64> {
@@ -315,5 +393,46 @@ mod tests {
         assert!(prompt.contains("Implemented parser"));
         assert!(prompt.contains("Key decisions made"));
         assert!(prompt.contains("Next steps"));
+    }
+
+    #[test]
+    fn context_budget_calculates_breakdown() {
+        let temp = tempdir().expect("tempdir");
+        fs::write(temp.path().join("RISTRETTO.md"), "context".repeat(80)).expect("context");
+        fs::write(temp.path().join("HANDOFF.md"), "handoff".repeat(40)).expect("handoff");
+        let info = agent(
+            temp.path().to_path_buf(),
+            AgentType::Codex,
+            "implement budget",
+        );
+        let monitor = ContextMonitor::default();
+
+        let budget = monitor.context_budget(&info, 800);
+
+        assert_eq!(budget.max_context, 256_000);
+        assert!(budget.injected_tokens > 0);
+        assert!(budget.mcp_overhead_tokens > 0);
+        assert_eq!(budget.tool_output_tokens, 200);
+    }
+
+    #[test]
+    fn alert_thresholds_are_reported() {
+        let monitor = ContextMonitor::default();
+        let alerts = monitor.alerts_for(&rist_shared::ContextBudget {
+            injected_tokens: 20_000,
+            mcp_overhead_tokens: 30_000,
+            tool_output_tokens: 40_000,
+            max_context: 200_000,
+            alerts: Vec::new(),
+        });
+
+        assert_eq!(alerts.len(), 3);
+        assert!(alerts.iter().any(|alert| alert.contains("MCP overhead")));
+        assert!(alerts
+            .iter()
+            .any(|alert| alert.contains("output filtering")));
+        assert!(alerts
+            .iter()
+            .any(|alert| alert.contains("context injection")));
     }
 }

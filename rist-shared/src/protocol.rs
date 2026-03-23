@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::types::{
-    AgentInfo, AgentStatus, AgentType, EventFilter, HookConfig, HookEvent, HookResult,
-    MergeStrategy, ReviewScope, SessionId, Task, TaskStatus,
+    AgentInfo, AgentStatus, AgentType, ContextBudget, EventFilter, HookConfig, HookEvent,
+    HookResult, MergeStrategy, ReviewScope, SessionId, Task, TaskStatus,
 };
 
 pub const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
@@ -75,6 +75,11 @@ pub enum Request {
         id: SessionId,
         /// Command line to run.
         command: String,
+    },
+    /// Read the detailed context budget for a session.
+    GetContextBudget {
+        /// Session identifier.
+        id: SessionId,
     },
     /// Read the task graph.
     ReadTaskGraph,
@@ -195,6 +200,11 @@ pub enum Response {
         stderr: String,
         /// Exit code.
         exit_code: i32,
+    },
+    /// Detailed context budget breakdown.
+    ContextBudget {
+        /// Breakdown for the requested session.
+        budget: ContextBudget,
     },
     /// Result of waiting for an agent state transition.
     WaitStatus {

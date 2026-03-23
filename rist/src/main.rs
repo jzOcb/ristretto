@@ -106,6 +106,7 @@ async fn run(args: Args) -> io::Result<()> {
     app.set_status_message(tr("tui.help"));
     app.refresh_agents(client.list_agents().await?);
     app.refresh_visible_outputs(&client).await;
+    app.refresh_visible_context_budgets(&client).await;
 
     let mut agent_tick = tokio::time::interval(Duration::from_secs(1));
     agent_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -145,6 +146,7 @@ async fn run(args: Args) -> io::Result<()> {
             }
             _ = output_tick.tick() => {
                 app.refresh_visible_outputs(&client).await;
+                app.refresh_visible_context_budgets(&client).await;
             }
         }
     }

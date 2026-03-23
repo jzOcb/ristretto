@@ -273,13 +273,22 @@ async fn dispatch_request(
             },
         },
         Request::RunCommand { id, command } => {
-            let manager = pty_manager.lock().await;
+            let mut manager = pty_manager.lock().await;
             match manager.run_command(*id, command) {
                 Ok((stdout, stderr, exit_code)) => Response::CommandOutput {
                     stdout,
                     stderr,
                     exit_code,
                 },
+                Err(error) => Response::Error {
+                    message: error.to_string(),
+                },
+            }
+        }
+        Request::GetContextBudget { id } => {
+            let manager = pty_manager.lock().await;
+            match manager.get_context_budget(*id) {
+                Ok(budget) => Response::ContextBudget { budget },
                 Err(error) => Response::Error {
                     message: error.to_string(),
                 },

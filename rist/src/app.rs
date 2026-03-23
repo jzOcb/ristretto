@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 
 use rist_shared::protocol::Event;
-use rist_shared::{AgentInfo, AgentStatus, SessionId};
+use rist_shared::{AgentInfo, AgentStatus, ContextBudget, SessionId};
 
 use rist::daemon_client::{ClientEvent, DaemonClient};
 
@@ -31,6 +31,7 @@ pub struct App {
     status_message: String,
     task_events: Vec<String>,
     output_states: HashMap<SessionId, OutputState>,
+    context_budgets: HashMap<SessionId, ContextBudget>,
 }
 
 /// Available main-pane layouts.
@@ -71,6 +72,7 @@ impl App {
             status_message: String::new(),
             task_events: Vec::new(),
             output_states: HashMap::new(),
+            context_budgets: HashMap::new(),
         }
     }
 
@@ -147,6 +149,20 @@ impl App {
         }
     }
 
+    /// Refreshes context budgets for the visible agent panes.
+    pub async fn refresh_visible_context_budgets(&mut self, client: &DaemonClient) {
+        if let Some(agent) = self.focused_agent_info() {
+            if let Ok(budget) = client.get_context_budget(agent.id).await {
+                self.context_budgets.insert(agent.id, budget);
+            }
+        }
+        if let Some(agent) = self.split_agent_info() {
+            if let Ok(budget) = client.get_context_budget(agent.id).await {
+                self.context_budgets.insert(agent.id, budget);
+            }
+        }
+    }
+
     /// Updates local state from a daemon-side client event.
     pub fn apply_client_event(&mut self, event: ClientEvent) {
         match event {
@@ -182,6 +198,7 @@ impl App {
                 format!("task: {}", agent.task),
                 format!("workdir: {}", agent.workdir.display()),
                 format!("status: {}", status_label(&agent.status)),
+                self.format_context_line(agent.id),
                 format!(
                     "exit: {}",
                     agent
@@ -298,11 +315,28 @@ impl App {
             .retain(|session_id, _| active_ids.contains(session_id));
         self.output_states
             .retain(|session_id, _| active_ids.contains(session_id));
+        self.context_budgets
+            .retain(|session_id, _| active_ids.contains(session_id));
     }
 
     fn replace_output(&mut self, id: SessionId, lines: Vec<String>) {
         self.agent_outputs.insert(id, lines);
         self.output_states.remove(&id);
+    }
+
+    fn format_context_line(&self, id: SessionId) -> String {
+        self.context_budgets.get(&id).map_or_else(
+            || "Context: n/a".to_owned(),
+            |budget| {
+                format!(
+                    "Context: {:.0}% | Injected: {:.1}% | MCP: {:.1}% | Tool output: {:.1}%",
+                    budget.total_percentage(),
+                    budget.injected_percentage(),
+                    budget.mcp_percentage(),
+                    budget.tool_output_percentage(),
+                )
+            },
+        )
     }
 }
 
