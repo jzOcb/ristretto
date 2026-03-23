@@ -109,6 +109,41 @@ mod tests {
     use super::*;
     use rist_shared::{AgentStatus, TaskStatus};
 
+    fn sample_session() -> SessionId {
+        SessionId(Uuid::from_u128(0x1234))
+    }
+
+    fn event_for_filter(filter: EventFilter) -> Event {
+        match filter {
+            EventFilter::PtyData => Event::PtyData {
+                id: sample_session(),
+                data: b"hello".to_vec(),
+            },
+            EventFilter::StatusChange => Event::StatusChange {
+                id: sample_session(),
+                old: AgentStatus::Idle,
+                new: AgentStatus::Working,
+            },
+            EventFilter::AgentExited => Event::AgentExited {
+                id: sample_session(),
+                exit_code: 0,
+            },
+            EventFilter::TaskUpdate => Event::TaskUpdate {
+                task_id: "task-1".to_owned(),
+                status: TaskStatus::Working,
+            },
+            EventFilter::ContextWarning => Event::ContextWarning {
+                id: sample_session(),
+                usage_pct: 92.5,
+            },
+            EventFilter::LoopDetected => Event::LoopDetected {
+                id: sample_session(),
+                pattern: "same output".to_owned(),
+            },
+            EventFilter::All | EventFilter::Unknown => Event::Unknown,
+        }
+    }
+
     #[test]
     fn add_route_and_route_returns_matching_targets() {
         let session_id = SessionId(Uuid::nil());
@@ -198,5 +233,89 @@ mod tests {
             status: TaskStatus::Working,
         };
         assert_eq!(router.route(&task_event).len(), 1);
+    }
+
+    #[test]
+    fn filter_matches_event_covers_all_event_types() {
+        let supported_filters = [
+            EventFilter::PtyData,
+            EventFilter::StatusChange,
+            EventFilter::AgentExited,
+            EventFilter::TaskUpdate,
+            EventFilter::ContextWarning,
+            EventFilter::LoopDetected,
+        ];
+
+        for filter in supported_filters {
+            let event = event_for_filter(filter.clone());
+            assert!(filter_matches_event(&filter, &event));
+            assert!(filter_matches_event(&EventFilter::All, &event));
+        }
+
+        assert!(!filter_matches_event(
+            &EventFilter::PtyData,
+            &Event::StatusChange {
+                id: sample_session(),
+                old: AgentStatus::Idle,
+                new: AgentStatus::Done,
+            }
+        ));
+        assert!(!filter_matches_event(&EventFilter::Unknown, &Event::Unknown));
+        assert!(filter_matches_event(&EventFilter::All, &Event::Unknown));
+    }
+
+    #[test]
+    fn add_and_remove_session_behaves_like_subscribe_and_unsubscribe() {
+        let session_id = sample_session();
+        let file_target = RouteTarget::FileNotification {
+            path: PathBuf::from("/tmp/events.jsonl"),
+        };
+        let session_target = RouteTarget::McpChannel { session_id };
+        let event = Event::StatusChange {
+            id: session_id,
+            old: AgentStatus::Idle,
+            new: AgentStatus::Working,
+        };
+
+        let mut router = EventRouter::new();
+        router.add_route(EventFilter::StatusChange, file_target.clone());
+        router.add_route(EventFilter::StatusChange, session_target.clone());
+
+        let targets = router.route(&event);
+        assert_eq!(targets, vec![&file_target, &session_target]);
+
+        router.remove_session(session_id);
+
+        assert_eq!(router.route(&event), vec![&file_target]);
+    }
+
+    #[test]
+    fn route_dispatches_all_transport_types_for_matching_event() {
+        let session_id = sample_session();
+        let mcp = RouteTarget::McpChannel { session_id };
+        let file = RouteTarget::FileNotification {
+            path: PathBuf::from("/tmp/events.jsonl"),
+        };
+        let webhook = RouteTarget::Webhook {
+            url: "http://localhost:8080/events".to_owned(),
+        };
+        let stdin = RouteTarget::AgentStdin { session_id };
+        let mut router = EventRouter::new();
+
+        router.add_route(EventFilter::AgentExited, mcp.clone());
+        router.add_route(EventFilter::AgentExited, file.clone());
+        router.add_route(EventFilter::AgentExited, webhook.clone());
+        router.add_route(EventFilter::AgentExited, stdin.clone());
+
+        let targets = router.route(&Event::AgentExited {
+            id: session_id,
+            exit_code: 1,
+        });
+
+        assert_eq!(targets.len(), 4);
+        assert!(targets.contains(&&mcp));
+        assert!(targets.contains(&&file));
+        assert!(targets.contains(&&webhook));
+        assert!(targets.contains(&&stdin));
     }
 }

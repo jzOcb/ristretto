@@ -304,6 +304,7 @@ where
 mod tests {
     use std::fs;
     use std::path::Path;
+    use std::process::Command;
 
     use git2::{Repository, RepositoryInitOptions, Signature};
     use tempfile::tempdir;
@@ -335,6 +336,51 @@ mod tests {
         (dir, repo)
     }
 
+    fn git(repo_path: &Path, args: &[&str]) {
+        let status = Command::new("git")
+            .args(args)
+            .current_dir(repo_path)
+            .status()
+            .expect("git command");
+        assert!(status.success(), "git {:?} failed with {status}", args);
+    }
+
+    fn checkout(repo_path: &Path, branch: &str) {
+        git(repo_path, &["checkout", "-f", branch]);
+        git(repo_path, &["clean", "-fd"]);
+    }
+
+    fn create_branch(repo: &Repository, branch: &str) {
+        let head = repo.head().expect("head");
+        let commit = head.peel_to_commit().expect("commit");
+        repo.branch(branch, &commit, false).expect("branch");
+    }
+
+    fn commit_file(
+        repo: &Repository,
+        path: &Path,
+        rel_path: &str,
+        contents: &str,
+        message: &str,
+    ) {
+        fs::write(path.join(rel_path), contents).expect("write");
+        let mut index = repo.index().expect("index");
+        index.add_path(Path::new(rel_path)).expect("add");
+        let tree_id = index.write_tree().expect("tree");
+        let tree = repo.find_tree(tree_id).expect("tree");
+        let sig = Signature::now("Ristretto", "ristretto@example.com").expect("sig");
+        let parent = repo
+            .head()
+            .expect("head")
+            .peel_to_commit()
+            .expect("parent commit");
+        let commit_id = repo
+            .commit(Some("HEAD"), &sig, &sig, message, &tree, &[&parent])
+            .expect("commit");
+        drop(tree);
+        let _ = repo.find_commit(commit_id).expect("commit");
+    }
+
     #[test]
     fn task_slug_normalizes_and_truncates() {
         let slug = GitManager::task_slug("Build Ristretto Phase 2A!!! with spaces");
@@ -358,36 +404,89 @@ mod tests {
     #[test]
     fn detect_conflicts_returns_conflicted_paths() {
         let (dir, repo) = init_repo();
-        let sig = Signature::now("Ristretto", "ristretto@example.com").expect("sig");
+        create_branch(&repo, "feature");
 
-        let head = repo.head().expect("head");
-        let commit = head.peel_to_commit().expect("commit");
-        repo.branch("feature", &commit, false).expect("branch");
-
-        fs::write(dir.path().join("README.md"), "feature\n").expect("write feature");
-        let mut index = repo.index().expect("index");
-        index.add_path(Path::new("README.md")).expect("add");
-        let tree_id = index.write_tree().expect("tree");
-        let tree = repo.find_tree(tree_id).expect("tree");
-        repo.commit(
-            Some("refs/heads/feature"),
-            &sig,
-            &sig,
+        checkout(dir.path(), "feature");
+        commit_file(
+            &repo,
+            dir.path(),
+            "README.md",
+            "conflict\nfeature\n",
             "feature",
-            &tree,
-            &[&commit],
-        )
-        .expect("commit feature");
+        );
 
-        fs::write(dir.path().join("README.md"), "main\n").expect("write main");
-        let mut index = repo.index().expect("index");
-        index.add_path(Path::new("README.md")).expect("add");
-        let tree_id = index.write_tree().expect("tree");
-        let tree = repo.find_tree(tree_id).expect("tree");
-        repo.commit(Some("HEAD"), &sig, &sig, "main", &tree, &[&commit])
-            .expect("commit main");
+        checkout(dir.path(), "main");
+        commit_file(&repo, dir.path(), "README.md", "conflict\nmain\n", "main");
 
         let conflicts = GitManager::detect_conflicts(dir.path(), "feature").expect("conflicts");
         assert_eq!(conflicts, vec!["README.md".to_owned()]);
+    }
+
+    #[test]
+    fn detect_conflicts_returns_empty_for_clean_merge() {
+        let (dir, repo) = init_repo();
+        create_branch(&repo, "feature");
+
+        checkout(dir.path(), "feature");
+        commit_file(&repo, dir.path(), "feature.txt", "hello from feature\n", "feature");
+        checkout(dir.path(), "main");
+
+        let conflicts = GitManager::detect_conflicts(dir.path(), "feature").expect("conflicts");
+        assert!(conflicts.is_empty());
+    }
+
+    #[test]
+    fn squash_merge_succeeds_for_clean_branch() {
+        let (dir, repo) = init_repo();
+        create_branch(&repo, "feature");
+
+        checkout(dir.path(), "feature");
+        commit_file(
+            &repo,
+            dir.path(),
+            "feature.txt",
+            "hello from feature\n",
+            "feature work",
+        );
+        checkout(dir.path(), "main");
+
+        let result =
+            GitManager::squash_merge(dir.path(), "feature", "squash feature").expect("merge");
+
+        assert!(result.success);
+        assert_eq!(result.message, "squash merge completed");
+        assert!(result.commit_hash.is_some());
+        assert_eq!(
+            fs::read_to_string(dir.path().join("feature.txt")).expect("merged file"),
+            "hello from feature\n"
+        );
+
+        let head = repo.head().expect("head").peel_to_commit().expect("commit");
+        assert_eq!(head.message().map(str::trim), Some("squash feature"));
+    }
+
+    #[test]
+    fn preview_merge_reports_diff_and_stats() {
+        let (dir, repo) = init_repo();
+        create_branch(&repo, "feature");
+
+        checkout(dir.path(), "feature");
+        commit_file(
+            &repo,
+            dir.path(),
+            "feature.txt",
+            "line one\nline two\n",
+            "feature work",
+        );
+        checkout(dir.path(), "main");
+
+        let preview = GitManager::preview_merge(dir.path(), "feature").expect("preview");
+        assert!(preview.diff.contains("diff --git"));
+        assert!(preview.diff.contains("feature.txt"));
+        assert!(preview.diff.contains("+line one"));
+        assert_eq!(preview.files_changed, 1);
+        assert_eq!(preview.insertions, 2);
+        assert_eq!(preview.deletions, 0);
+        assert!(preview.conflicts.is_empty());
     }
 }

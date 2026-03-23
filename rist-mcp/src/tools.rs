@@ -624,14 +624,18 @@ mod tests {
             Box::new(TestAdapter),
         );
 
-        let server = SocketServer::bind(
+        let server = match SocketServer::bind(
             &socket_path,
             Arc::new(Mutex::new(manager)),
             Arc::new(Mutex::new(SessionStore::new(sessions_path))),
             Arc::new(Mutex::new(TaskPlanner::new(task_graph_path))),
         )
         .await
-        .expect("bind");
+        {
+            Ok(server) => server,
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => return,
+            Err(error) => panic!("bind: {error}"),
+        };
         let server_task = tokio::spawn(server.run());
 
         let client = DaemonClient::connect(socket_path.clone())
@@ -667,5 +671,97 @@ mod tests {
         );
 
         server_task.abort();
+    }
+
+    #[test]
+    fn parse_agent_type_supports_builtins_and_custom() {
+        assert_eq!(parse_agent_type("claude_code"), Ok(AgentType::Claude));
+        assert_eq!(parse_agent_type("codex"), Ok(AgentType::Codex));
+        assert_eq!(parse_agent_type("gemini"), Ok(AgentType::Gemini));
+        assert_eq!(
+            parse_agent_type("my-custom-agent"),
+            Ok(AgentType::Custom("my-custom-agent".to_owned()))
+        );
+        assert_eq!(
+            parse_agent_type("   ").expect_err("empty should fail"),
+            "agent_type must not be empty"
+        );
+    }
+
+    #[test]
+    fn parse_task_rejects_empty_id() {
+        let error = parse_task(&json!({
+            "id": "   ",
+            "title": "Title",
+        }))
+        .expect_err("empty id should fail");
+
+        assert_eq!(error, "field id must not be empty");
+    }
+
+    #[test]
+    fn parse_task_preserves_optional_fields() {
+        let task = parse_task(&json!({
+            "id": "task-1",
+            "title": "Title",
+            "description": "Detailed work",
+            "status": "review",
+            "priority": "high",
+            "agent_type": "codex",
+            "depends_on": ["task-0"],
+            "file_ownership": ["src/main.rs"]
+        }))
+        .expect("task");
+
+        assert_eq!(task.id, "task-1");
+        assert_eq!(task.description.as_deref(), Some("Detailed work"));
+        assert_eq!(task.agent_type, Some(AgentType::Codex));
+        assert_eq!(task.depends_on, vec!["task-0".to_owned()]);
+        assert_eq!(task.file_ownership, vec![PathBuf::from("src/main.rs")]);
+    }
+
+    #[test]
+    fn task_to_json_preserves_description_and_agent_type() {
+        let value = task_to_json(Task {
+            id: "task-1".to_owned(),
+            title: "Title".to_owned(),
+            description: Some("Detailed work".to_owned()),
+            status: TaskStatus::Assigned,
+            priority: Priority::Critical,
+            agent_type: Some(AgentType::Custom("planner".to_owned())),
+            owner: Some(SessionId::new()),
+            depends_on: vec!["task-0".to_owned()],
+            file_ownership: vec![PathBuf::from("src/main.rs")],
+        });
+
+        assert_eq!(value.get("description").and_then(Value::as_str), Some("Detailed work"));
+        assert_eq!(value.get("agent_type").and_then(Value::as_str), Some("planner"));
+        assert_eq!(value.get("status").and_then(Value::as_str), Some("assigned"));
+        assert_eq!(value.get("priority").and_then(Value::as_str), Some("critical"));
+    }
+
+    #[test]
+    fn optional_u64_rejects_negative_and_float_values() {
+        let negative = optional_u64(&json!({ "lines": -1 }), "lines").expect_err("negative");
+        let float = optional_u64(&json!({ "lines": 1.5 }), "lines").expect_err("float");
+
+        assert_eq!(negative, "field lines must be a non-negative integer");
+        assert_eq!(float, "field lines must be a non-negative integer");
+    }
+
+    #[test]
+    fn required_non_empty_str_validates_presence_and_content() {
+        assert_eq!(
+            required_non_empty_str(&json!({ "id": "task-1" }), "id").expect("value"),
+            "task-1"
+        );
+        assert_eq!(
+            required_non_empty_str(&json!({ "id": "" }), "id").expect_err("empty"),
+            "field id must not be empty"
+        );
+        assert_eq!(
+            required_non_empty_str(&json!({}), "id").expect_err("missing"),
+            "missing required field: id"
+        );
     }
 }

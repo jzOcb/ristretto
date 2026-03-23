@@ -97,3 +97,122 @@ fn unique_temp_path(path: &Path) -> PathBuf {
     );
     path.with_file_name(unique)
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Barrier};
+    use std::thread;
+
+    use chrono::Utc;
+    use tempfile::tempdir;
+
+    use super::*;
+    use rist_shared::{AgentStatus, AgentType, ContextUsage};
+
+    fn sample_agent(task: &str) -> AgentInfo {
+        AgentInfo {
+            id: SessionId::new(),
+            agent_type: AgentType::Codex,
+            task: task.to_owned(),
+            status: AgentStatus::Working,
+            workdir: PathBuf::from("/tmp/worktree"),
+            branch: Some("rist/test".to_owned()),
+            file_ownership: vec![PathBuf::from("src/lib.rs")],
+            created_at: Utc::now(),
+            last_output_at: Some(Utc::now()),
+            context_usage: Some(ContextUsage {
+                estimated_tokens: 42,
+                max_tokens: 128_000,
+                percentage: 12.5,
+            }),
+            exit_code: None,
+            metadata: HashMap::from([("source".to_owned(), "test".to_owned())]),
+        }
+    }
+
+    #[test]
+    fn save_and_load_roundtrip_preserves_sessions() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("sessions.json");
+        let mut store = SessionStore::new(path.clone());
+        let first = sample_agent("first task");
+        let second = sample_agent("second task");
+
+        store.add(first.clone());
+        store.add(second.clone());
+        store.save().expect("save");
+
+        let loaded = SessionStore::load(&path).expect("load");
+        assert_eq!(loaded.sessions(), &[first, second]);
+        assert_eq!(loaded.path, path);
+    }
+
+    #[test]
+    fn concurrent_saves_produce_valid_store_contents() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("nested").join("sessions.json");
+        let barrier = Arc::new(Barrier::new(8));
+        let mut handles = Vec::new();
+
+        for index in 0..8 {
+            let barrier = Arc::clone(&barrier);
+            let path = path.clone();
+            handles.push(thread::spawn(move || {
+                let mut store = SessionStore::new(path);
+                store.add(sample_agent(&format!("task-{index}")));
+                barrier.wait();
+                store.save().expect("concurrent save");
+            }));
+        }
+
+        for handle in handles {
+            handle.join().expect("thread");
+        }
+
+        let raw = fs::read_to_string(&path).expect("saved file");
+        let sessions: Vec<AgentInfo> = serde_json::from_str(&raw).expect("valid json");
+        assert_eq!(sessions.len(), 1);
+        assert!(sessions[0].task.starts_with("task-"));
+    }
+
+    #[test]
+    fn serde_skip_omits_path_and_deserializes_default_path() {
+        let path = PathBuf::from("/tmp/sessions.json");
+        let mut store = SessionStore::new(path);
+        store.add(sample_agent("serialize"));
+
+        let value = serde_json::to_value(&store).expect("serialize");
+        assert!(value.get("path").is_none());
+        assert_eq!(
+            value.get("sessions"),
+            Some(&serde_json::to_value(store.sessions()).expect("sessions"))
+        );
+
+        let decoded: SessionStore = serde_json::from_value(value).expect("deserialize");
+        assert_eq!(decoded.sessions(), store.sessions());
+        assert!(decoded.path.as_os_str().is_empty());
+    }
+
+    #[test]
+    fn load_returns_invalid_data_for_corrupt_json() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("sessions.json");
+        fs::write(&path, "{ not valid json").expect("write");
+
+        let error = SessionStore::load(&path).expect_err("corrupt data should fail");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn save_fails_when_parent_path_is_not_a_directory() {
+        let dir = tempdir().expect("tempdir");
+        let bad_parent = dir.path().join("not-a-directory");
+        fs::write(&bad_parent, "blocking file").expect("write");
+
+        let mut store = SessionStore::new(bad_parent.join("sessions.json"));
+        store.add(sample_agent("bad path"));
+
+        assert!(store.save().is_err());
+    }
+}
