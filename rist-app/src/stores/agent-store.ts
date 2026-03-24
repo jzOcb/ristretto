@@ -21,6 +21,7 @@ interface AgentStoreState {
   spawnOpen: boolean;
   commandInput: string;
   viewMode: 'stream' | 'cards';
+  showSettings: boolean;
   showActivityFeed: boolean;
   activityLog: ActivityEvent[];
   setAgents: (agents: AgentInfo[]) => void;
@@ -39,6 +40,7 @@ interface AgentStoreState {
   setSpawnOpen: (value: boolean) => void;
   setCommandInput: (value: string) => void;
   toggleViewMode: () => void;
+  toggleSettings: () => void;
   toggleActivityFeed: () => void;
   pushActivity: (event: Omit<ActivityEvent, 'id' | 'timestamp'>) => void;
 }
@@ -58,6 +60,7 @@ export const useAgentStore = create<AgentStoreState>((set) => ({
   spawnOpen: false,
   commandInput: '',
   viewMode: 'stream',
+  showSettings: false,
   showActivityFeed: false,
   activityLog: [],
   setAgents: (agents) =>
@@ -119,6 +122,7 @@ export const useAgentStore = create<AgentStoreState>((set) => ({
   setSpawnOpen: (spawnOpen) => set({ spawnOpen }),
   setCommandInput: (commandInput) => set({ commandInput }),
   toggleViewMode: () => set((state) => ({ viewMode: state.viewMode === 'stream' ? 'cards' : 'stream' })),
+  toggleSettings: () => set((state) => ({ showSettings: !state.showSettings })),
   toggleActivityFeed: () => set((state) => ({ showActivityFeed: !state.showActivityFeed })),
   pushActivity: (event) =>
     set((state) => ({

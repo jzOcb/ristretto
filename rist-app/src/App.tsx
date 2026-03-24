@@ -6,6 +6,7 @@ import { AgentCards } from './components/AgentCards';
 import { AgentView } from './components/AgentView';
 import { CommandPalette } from './components/CommandPalette';
 import { DagPanel } from './components/DagPanel';
+import { SettingsPanel } from './components/SettingsPanel';
 import { StatusBar } from './components/StatusBar';
 import { useDaemon } from './hooks/use-daemon';
 import { useKeyboard } from './hooks/use-keyboard';
@@ -74,6 +75,7 @@ export default function App() {
         <CommandPalette />
       </div>
       <AgentBar />
+      <SettingsPanel />
     </main>
   );
 }

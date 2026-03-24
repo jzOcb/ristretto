@@ -1,9 +1,12 @@
+use std::collections::HashMap;
 use std::io;
 use std::path::PathBuf;
 
+use serde::{Deserialize, Serialize};
+
 use dirs::home_dir;
 use rist_shared::protocol::{decode_frame_async, encode_frame_async, Event, Request, Response};
-use rist_shared::{AgentInfo, AgentType, EventFilter, SessionId, Task};
+use rist_shared::{AgentInfo, AgentType, ContextBudget, EventFilter, MergeStrategy, SessionId, Task};
 use tokio::net::UnixStream;
 
 pub struct DaemonClient {
@@ -134,6 +137,96 @@ impl DaemonClient {
             )),
         }
     }
+
+    pub async fn ping(&mut self) -> io::Result<String> {
+        match self.request(Request::Ping).await? {
+            Response::Pong { version } => Ok(version),
+            Response::Error { message } => Err(io::Error::new(io::ErrorKind::Other, message)),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("unexpected ping response: {other:?}"),
+            )),
+        }
+    }
+
+    pub async fn archive_agent(&mut self, id: SessionId, keep_worktree: bool) -> io::Result<()> {
+        match self.request(Request::ArchiveAgent { id, keep_worktree }).await? {
+            Response::Ok => Ok(()),
+            Response::Error { message } => Err(io::Error::new(io::ErrorKind::Other, message)),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("unexpected archive_agent response: {other:?}"),
+            )),
+        }
+    }
+
+    pub async fn get_context_budget(&mut self, id: SessionId) -> io::Result<ContextBudget> {
+        match self.request(Request::GetContextBudget { id }).await? {
+            Response::ContextBudget { budget } => Ok(budget),
+            Response::Error { message } => Err(io::Error::new(io::ErrorKind::Other, message)),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("unexpected get_context_budget response: {other:?}"),
+            )),
+        }
+    }
+
+    pub async fn get_file_ownership(&mut self) -> io::Result<HashMap<PathBuf, SessionId>> {
+        match self.request(Request::GetFileOwnership).await? {
+            Response::FileOwnership { map } => Ok(map),
+            Response::Error { message } => Err(io::Error::new(io::ErrorKind::Other, message)),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("unexpected get_file_ownership response: {other:?}"),
+            )),
+        }
+    }
+
+    pub async fn merge_agent(
+        &mut self,
+        id: SessionId,
+        preview_only: bool,
+        strategy: MergeStrategy,
+    ) -> io::Result<MergeOutcome> {
+        match self.request(Request::MergeAgent { id, preview_only, strategy }).await? {
+            Response::MergePreview { diff, conflicts } => {
+                Ok(MergeOutcome::Preview { diff, conflicts })
+            }
+            Response::MergeResult { success, message } => {
+                Ok(MergeOutcome::Result { success, message })
+            }
+            Response::Error { message } => Err(io::Error::new(io::ErrorKind::Other, message)),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("unexpected merge_agent response: {other:?}"),
+            )),
+        }
+    }
+
+    pub async fn get_output(&mut self, id: SessionId, lines: usize) -> io::Result<Vec<String>> {
+        match self.request(Request::GetOutput { id, lines }).await? {
+            Response::Output { lines } => Ok(lines),
+            Response::Error { message } => Err(io::Error::new(io::ErrorKind::Other, message)),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("unexpected get_output response: {other:?}"),
+            )),
+        }
+    }
+}
+
+/// Outcome of a merge request — either a preview or an execution result.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MergeOutcome {
+    Preview {
+        diff: String,
+        conflicts: Vec<String>,
+    },
+    Result {
+        success: bool,
+        message: String,
+    },
 }
 
 pub fn socket_path() -> io::Result<PathBuf> {

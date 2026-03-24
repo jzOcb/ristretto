@@ -14,10 +14,12 @@ export const useKeyboard = () => {
   const toggleDag = useAgentStore((state) => state.toggleDag);
   const toggleViewMode = useAgentStore((state) => state.toggleViewMode);
   const toggleActivityFeed = useAgentStore((state) => state.toggleActivityFeed);
+  const toggleSettings = useAgentStore((state) => state.toggleSettings);
   const setPaletteOpen = useAgentStore((state) => state.setPaletteOpen);
   const setSpawnOpen = useAgentStore((state) => state.setSpawnOpen);
   const setAgents = useAgentStore((state) => state.setAgents);
   const paletteOpen = useAgentStore((state) => state.paletteOpen);
+  const showSettings = useAgentStore((state) => state.showSettings);
   const rawMode = useAgentStore((state) => state.rawMode);
 
   useEffect(() => {
@@ -25,6 +27,7 @@ export const useKeyboard = () => {
       if (!isMacCommand(event)) {
         if (event.key === 'Escape') {
           setPaletteOpen(false);
+          if (showSettings) toggleSettings();
           return;
         }
         return;
@@ -72,6 +75,10 @@ export const useKeyboard = () => {
           event.preventDefault();
           toggleActivityFeed();
           break;
+        case ',':
+          event.preventDefault();
+          toggleSettings();
+          break;
         case '[':
           event.preventDefault();
           switchTo(Math.max(0, index - 1));
@@ -104,6 +111,7 @@ export const useKeyboard = () => {
     toggleActivityFeed,
     toggleDag,
     toggleRawMode,
+    toggleSettings,
     toggleViewMode,
   ]);
 };

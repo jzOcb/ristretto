@@ -4,10 +4,13 @@ mod pty;
 use std::process::Stdio;
 use std::time::Duration;
 
-use daemon::DaemonClient;
+use std::collections::HashMap;
+use std::path::PathBuf;
+
+use daemon::{DaemonClient, MergeOutcome};
 use pty::{bytes_to_text, AgentOutputPayload};
 use rist_shared::protocol::Event;
-use rist_shared::{AgentInfo, AgentType, SessionId, Task};
+use rist_shared::{AgentInfo, AgentType, ContextBudget, MergeStrategy, SessionId, Task};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 use tokio::process::Command;
@@ -112,6 +115,70 @@ async fn resize_pty(
 async fn get_agent_buffer(state: State<'_, AppState>, agent_id: String) -> Result<String, String> {
     let session_id = parse_session_id(&agent_id)?;
     with_client(&state, |mut client| async move { client.get_buffer(session_id).await }).await
+}
+
+#[tauri::command]
+async fn ping(state: State<'_, AppState>) -> Result<String, String> {
+    with_client(&state, |mut client| async move { client.ping().await }).await
+}
+
+#[tauri::command]
+async fn archive_agent(
+    state: State<'_, AppState>,
+    agent_id: String,
+    keep_worktree: bool,
+) -> Result<(), String> {
+    let session_id = parse_session_id(&agent_id)?;
+    with_client(&state, |mut client| async move {
+        client.archive_agent(session_id, keep_worktree).await
+    })
+    .await
+}
+
+#[tauri::command]
+async fn get_context_budget(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<ContextBudget, String> {
+    let session_id = parse_session_id(&agent_id)?;
+    with_client(&state, |mut client| async move {
+        client.get_context_budget(session_id).await
+    })
+    .await
+}
+
+#[tauri::command]
+async fn get_file_ownership(
+    state: State<'_, AppState>,
+) -> Result<HashMap<PathBuf, SessionId>, String> {
+    with_client(&state, |mut client| async move { client.get_file_ownership().await }).await
+}
+
+#[tauri::command]
+async fn merge_agent(
+    state: State<'_, AppState>,
+    agent_id: String,
+    preview_only: bool,
+    strategy: MergeStrategy,
+) -> Result<MergeOutcome, String> {
+    let session_id = parse_session_id(&agent_id)?;
+    with_client(&state, |mut client| async move {
+        client.merge_agent(session_id, preview_only, strategy).await
+    })
+    .await
+}
+
+#[tauri::command]
+async fn get_output(
+    state: State<'_, AppState>,
+    agent_id: String,
+    lines: usize,
+) -> Result<Vec<String>, String> {
+    let session_id = parse_session_id(&agent_id)?;
+    with_client(&state, |mut client| async move {
+        client.get_output(session_id, lines).await
+    })
+    .await
 }
 
 #[tauri::command]
@@ -247,7 +314,13 @@ pub fn run() {
             write_to_pty,
             resize_pty,
             get_agent_buffer,
-            start_daemon
+            start_daemon,
+            ping,
+            archive_agent,
+            get_context_budget,
+            get_file_ownership,
+            merge_agent,
+            get_output
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
