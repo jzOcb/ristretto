@@ -1,6 +1,6 @@
 //! Shared domain and IPC data types.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::PathBuf;
 
@@ -489,6 +489,9 @@ pub struct AgentInfo {
     pub id: SessionId,
     /// Agent family.
     pub agent_type: AgentType,
+    /// Optional model identifier reserved for display.
+    #[serde(default)]
+    pub model: Option<String>,
     /// Human-readable task description.
     pub task: String,
     /// Current agent status.
@@ -599,6 +602,85 @@ pub struct TaskGraph {
     pub updated_at: DateTime<Utc>,
 }
 
+/// Returns task ids grouped by topological depth using Kahn's algorithm.
+#[must_use]
+pub fn topo_sort(task_graph: &TaskGraph) -> Vec<Vec<&str>> {
+    let known_tasks = task_graph
+        .tasks
+        .iter()
+        .map(|task| task.id.as_str())
+        .collect::<HashSet<_>>();
+    let mut indegree = task_graph
+        .tasks
+        .iter()
+        .map(|task| (task.id.as_str(), 0usize))
+        .collect::<HashMap<_, _>>();
+    let mut adjacency = task_graph
+        .tasks
+        .iter()
+        .map(|task| (task.id.as_str(), Vec::new()))
+        .collect::<HashMap<_, Vec<_>>>();
+
+    for task in &task_graph.tasks {
+        for dependency in &task.depends_on {
+            if known_tasks.contains(dependency.as_str()) {
+                *indegree.entry(task.id.as_str()).or_default() += 1;
+                adjacency
+                    .entry(dependency.as_str())
+                    .or_default()
+                    .push(task.id.as_str());
+            }
+        }
+    }
+
+    let mut frontier = indegree
+        .iter()
+        .filter_map(|(task_id, count)| (*count == 0).then_some(*task_id))
+        .collect::<Vec<_>>();
+    frontier.sort_unstable();
+
+    let mut groups = Vec::new();
+    let mut seen = HashSet::new();
+    while !frontier.is_empty() {
+        let mut group_ids = std::mem::take(&mut frontier);
+        group_ids.sort_unstable();
+
+        let mut next = Vec::new();
+        for task_id in group_ids.iter().copied() {
+            seen.insert(task_id);
+            if let Some(children) = adjacency.get(task_id) {
+                for child in children {
+                    if let Some(count) = indegree.get_mut(child) {
+                        *count = count.saturating_sub(1);
+                        if *count == 0 {
+                            next.push(*child);
+                        }
+                    }
+                }
+            }
+        }
+
+        groups.push(group_ids);
+
+        next.sort_unstable();
+        next.dedup();
+        frontier = next;
+    }
+
+    let mut remaining = task_graph
+        .tasks
+        .iter()
+        .map(|task| task.id.as_str())
+        .filter(|task_id| !seen.contains(task_id))
+        .collect::<Vec<_>>();
+    remaining.sort_unstable();
+    if !remaining.is_empty() {
+        groups.push(remaining);
+    }
+
+    groups
+}
+
 /// Structured message exchanged between planner and agents.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Message {
@@ -633,12 +715,13 @@ fn percentage(value: u64, max: u64) -> f64 {
 
 #[cfg(test)]
 mod tests {
+    use chrono::Utc;
     use serde_json::json;
     use uuid::Uuid;
 
     use super::{
         AgentStatus, AgentType, ContextUsage, HookConfig, HookEvent, HookResult, MessageType,
-        Priority, SessionId, Task, TaskStatus,
+        Priority, SessionId, Task, TaskGraph, TaskStatus,
     };
 
     #[test]
@@ -738,5 +821,68 @@ mod tests {
         let encoded = serde_json::to_value(&result).expect("serialize result");
         let decoded: HookResult = serde_json::from_value(encoded).expect("deserialize result");
         assert_eq!(decoded, result);
+    }
+
+    #[test]
+    fn topo_sort_returns_empty_groups_for_empty_graph() {
+        let graph = TaskGraph {
+            tasks: Vec::new(),
+            updated_at: Utc::now(),
+        };
+
+        assert!(super::topo_sort(&graph).is_empty());
+    }
+
+    #[test]
+    fn topo_sort_groups_single_task_graph() {
+        let graph = TaskGraph {
+            tasks: vec![Task {
+                id: "t1".to_owned(),
+                title: "Task t1".to_owned(),
+                description: None,
+                status: TaskStatus::Pending,
+                priority: Priority::Medium,
+                agent_type: None,
+                owner: None,
+                depends_on: Vec::new(),
+                file_ownership: Vec::new(),
+            }],
+            updated_at: Utc::now(),
+        };
+
+        assert_eq!(super::topo_sort(&graph), vec![vec!["t1"]]);
+    }
+
+    #[test]
+    fn topo_sort_retains_cyclic_tasks() {
+        let graph = TaskGraph {
+            tasks: vec![
+                Task {
+                    id: "a".to_owned(),
+                    title: "Task a".to_owned(),
+                    description: None,
+                    status: TaskStatus::Pending,
+                    priority: Priority::Medium,
+                    agent_type: None,
+                    owner: None,
+                    depends_on: vec!["b".to_owned()],
+                    file_ownership: Vec::new(),
+                },
+                Task {
+                    id: "b".to_owned(),
+                    title: "Task b".to_owned(),
+                    description: None,
+                    status: TaskStatus::Pending,
+                    priority: Priority::Medium,
+                    agent_type: None,
+                    owner: None,
+                    depends_on: vec!["a".to_owned()],
+                    file_ownership: Vec::new(),
+                },
+            ],
+            updated_at: Utc::now(),
+        };
+
+        assert_eq!(super::topo_sort(&graph), vec![vec!["a", "b"]]);
     }
 }

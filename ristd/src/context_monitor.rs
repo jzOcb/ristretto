@@ -336,6 +336,7 @@ mod tests {
         AgentInfo {
             id: SessionId::new(),
             agent_type,
+            model: None,
             task: task.to_owned(),
             status: AgentStatus::Working,
             workdir,

@@ -123,6 +123,7 @@ mod tests {
         rist_shared::AgentInfo {
             id: SessionId::new(),
             agent_type: AgentType::Codex,
+            model: None,
             task: "Continue the feature".to_owned(),
             status: AgentStatus::Working,
             workdir,

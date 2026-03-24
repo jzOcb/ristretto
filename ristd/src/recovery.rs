@@ -178,6 +178,7 @@ mod tests {
         AgentInfo {
             id: SessionId::new(),
             agent_type: AgentType::Codex,
+            model: None,
             task: "Implement recovery".to_owned(),
             status,
             workdir: PathBuf::from("."),

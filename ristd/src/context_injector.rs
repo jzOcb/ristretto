@@ -125,6 +125,7 @@ mod tests {
         AgentInfo {
             id,
             agent_type: AgentType::Codex,
+            model: None,
             task: task.to_owned(),
             status: AgentStatus::Working,
             workdir: PathBuf::from("/tmp/worktree"),

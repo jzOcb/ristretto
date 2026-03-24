@@ -8,7 +8,7 @@ use tokio::sync::mpsc::{self, UnboundedReceiver};
 
 use rist_shared::AgentType;
 
-use crate::app::{App, InputMode};
+use crate::app::{App, InputMode, ViewMode};
 use rist::daemon_client::DaemonClient;
 
 /// Terminal events consumed by the main TUI loop.
@@ -85,6 +85,22 @@ async fn handle_normal_mode(
     }
 
     match key.code {
+        KeyCode::Char('G') => {
+            app.view_mode = ViewMode::Graph;
+            Ok(true)
+        }
+        KeyCode::Char('L') => {
+            app.view_mode = ViewMode::List;
+            Ok(true)
+        }
+        KeyCode::Char('T') => {
+            app.view_mode = ViewMode::Terminal;
+            Ok(true)
+        }
+        KeyCode::Char('F') => {
+            app.show_file_overlay = !app.show_file_overlay;
+            Ok(true)
+        }
         KeyCode::Char('q') | KeyCode::Char('Q') => {
             app.running = false;
             Ok(false)
@@ -103,7 +119,7 @@ async fn handle_normal_mode(
             app.refresh_visible_outputs(client).await;
             Ok(true)
         }
-        KeyCode::Char('k') | KeyCode::Char('K') => {
+        KeyCode::Char('K') => {
             if let Some(agent) = app.focused_agent_info() {
                 client.kill_agent(agent.id).await?;
                 app.set_status_message(format!("killed {}", agent.task));
@@ -111,11 +127,15 @@ async fn handle_normal_mode(
             Ok(true)
         }
         KeyCode::Char('d') | KeyCode::Char('D') => {
-            app.toggle_split();
+            if app.view_mode == ViewMode::List {
+                app.toggle_split();
+            }
             Ok(true)
         }
         KeyCode::Char('p') | KeyCode::Char('P') => {
-            app.show_task_graph = !app.show_task_graph;
+            if app.view_mode == ViewMode::List {
+                app.show_task_graph = !app.show_task_graph;
+            }
             Ok(true)
         }
         KeyCode::Char('?') => {
@@ -123,17 +143,96 @@ async fn handle_normal_mode(
             Ok(true)
         }
         KeyCode::Tab => {
-            app.cycle_focus();
+            if app.view_mode == ViewMode::Graph {
+                app.cycle_task_selection(true);
+            } else {
+                app.cycle_focus();
+            }
             Ok(true)
         }
         KeyCode::Enter => {
-            app.input_mode = InputMode::Typing;
-            app.input_buffer.clear();
+            if app.view_mode == ViewMode::Graph {
+                app.toggle_expanded_node();
+            } else {
+                app.input_mode = InputMode::Typing;
+                app.input_buffer.clear();
+            }
+            Ok(true)
+        }
+        KeyCode::Esc => {
+            if app.view_mode == ViewMode::Graph {
+                app.collapse_expanded_node();
+            }
+            Ok(true)
+        }
+        KeyCode::Left => {
+            if app.view_mode == ViewMode::Graph {
+                app.move_task_selection(-1, 0);
+            }
+            Ok(true)
+        }
+        KeyCode::Right => {
+            if app.view_mode == ViewMode::Graph {
+                app.move_task_selection(1, 0);
+            }
+            Ok(true)
+        }
+        KeyCode::Up => {
+            if app.view_mode == ViewMode::Graph {
+                app.move_task_selection(0, -1);
+            }
+            Ok(true)
+        }
+        KeyCode::Down => {
+            if app.view_mode == ViewMode::Graph {
+                app.move_task_selection(0, 1);
+            }
+            Ok(true)
+        }
+        KeyCode::Char('h') => {
+            if app.view_mode == ViewMode::Graph {
+                app.dag_scroll.0 = app.dag_scroll.0.saturating_sub(4);
+            }
+            Ok(true)
+        }
+        KeyCode::Char('j') => {
+            if app.view_mode == ViewMode::Graph {
+                app.dag_scroll.1 = app.dag_scroll.1.saturating_add(2);
+            }
+            Ok(true)
+        }
+        KeyCode::Char('k') => {
+            if app.view_mode == ViewMode::Graph {
+                app.dag_scroll.1 = app.dag_scroll.1.saturating_sub(2);
+                return Ok(true);
+            }
+            if let Some(agent) = app.focused_agent_info() {
+                client.kill_agent(agent.id).await?;
+                app.set_status_message(format!("killed {}", agent.task));
+            }
+            Ok(true)
+        }
+        KeyCode::Char('l') => {
+            if app.view_mode == ViewMode::Graph {
+                app.dag_scroll.0 = app.dag_scroll.0.saturating_add(4);
+            }
             Ok(true)
         }
         KeyCode::Char(ch) if ch.is_ascii_digit() && ch != '0' => {
             let index = ch.to_digit(10).unwrap_or(1) as usize - 1;
-            app.focus_index(index);
+            if app.view_mode == ViewMode::Graph {
+                let ordered = app
+                    .dag_layout
+                    .iter()
+                    .flatten()
+                    .map(|(task_id, _)| task_id.clone())
+                    .collect::<Vec<_>>();
+                if let Some(task_id) = ordered.get(index) {
+                    app.selected_task = Some(task_id.clone());
+                }
+            } else {
+                app.focus_index(index);
+            }
             Ok(true)
         }
         _ => Ok(true),

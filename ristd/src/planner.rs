@@ -6,7 +6,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use chrono::Utc;
-use rist_shared::{SessionId, Task, TaskGraph, TaskStatus};
+use rist_shared::{topo_sort, SessionId, Task, TaskGraph, TaskStatus};
 
 /// Planner-owned task graph persistence and scheduling queries.
 #[derive(Debug, Clone)]
@@ -105,6 +105,22 @@ impl TaskPlanner {
                 } else {
                     Some((task, missing))
                 }
+            })
+            .collect()
+    }
+
+    /// Returns tasks grouped by topological depth using Kahn's algorithm.
+    #[must_use]
+    pub fn topo_sort(&self) -> Vec<Vec<&Task>> {
+        topo_sort(&self.task_graph)
+            .into_iter()
+            .map(|group| {
+                group
+                    .into_iter()
+                    .filter_map(|task_id| {
+                        self.task_graph.tasks.iter().find(|task| task.id == task_id)
+                    })
+                    .collect()
             })
             .collect()
     }
@@ -311,5 +327,103 @@ mod tests {
         assert_eq!(stats.done, 1);
         assert_eq!(stats.blocked, 1);
         assert_eq!(stats.error, 1);
+    }
+
+    #[test]
+    fn topo_sort_groups_linear_chain_by_depth() {
+        let temp = tempdir().expect("tempdir");
+        let mut planner = TaskPlanner::new(temp.path().join("task_graph.json"));
+        planner.task_graph = TaskGraph {
+            tasks: vec![
+                task("t1", TaskStatus::Pending, &[]),
+                task("t2", TaskStatus::Pending, &["t1"]),
+                task("t3", TaskStatus::Pending, &["t2"]),
+            ],
+            updated_at: Utc::now(),
+        };
+
+        let groups = planner.topo_sort();
+        assert_eq!(group_ids(&groups), vec![vec!["t1"], vec!["t2"], vec!["t3"]]);
+    }
+
+    #[test]
+    fn topo_sort_groups_diamond_pattern() {
+        let temp = tempdir().expect("tempdir");
+        let mut planner = TaskPlanner::new(temp.path().join("task_graph.json"));
+        planner.task_graph = TaskGraph {
+            tasks: vec![
+                task("t1", TaskStatus::Pending, &[]),
+                task("t2", TaskStatus::Pending, &["t1"]),
+                task("t3", TaskStatus::Pending, &["t1"]),
+                task("t4", TaskStatus::Pending, &["t2", "t3"]),
+            ],
+            updated_at: Utc::now(),
+        };
+
+        let groups = planner.topo_sort();
+        assert_eq!(
+            group_ids(&groups),
+            vec![vec!["t1"], vec!["t2", "t3"], vec!["t4"]]
+        );
+    }
+
+    #[test]
+    fn topo_sort_keeps_disconnected_roots_together() {
+        let temp = tempdir().expect("tempdir");
+        let mut planner = TaskPlanner::new(temp.path().join("task_graph.json"));
+        planner.task_graph = TaskGraph {
+            tasks: vec![
+                task("t1", TaskStatus::Pending, &[]),
+                task("t2", TaskStatus::Pending, &[]),
+                task("t3", TaskStatus::Pending, &["t1"]),
+                task("t4", TaskStatus::Pending, &["t2"]),
+            ],
+            updated_at: Utc::now(),
+        };
+
+        let groups = planner.topo_sort();
+        assert_eq!(group_ids(&groups), vec![vec!["t1", "t2"], vec!["t3", "t4"]]);
+    }
+
+    #[test]
+    fn topo_sort_returns_empty_for_empty_graph() {
+        let temp = tempdir().expect("tempdir");
+        let planner = TaskPlanner::new(temp.path().join("task_graph.json"));
+
+        assert!(planner.topo_sort().is_empty());
+    }
+
+    #[test]
+    fn topo_sort_groups_single_task_graph() {
+        let temp = tempdir().expect("tempdir");
+        let mut planner = TaskPlanner::new(temp.path().join("task_graph.json"));
+        planner.task_graph = TaskGraph {
+            tasks: vec![task("t1", TaskStatus::Pending, &[])],
+            updated_at: Utc::now(),
+        };
+
+        assert_eq!(group_ids(&planner.topo_sort()), vec![vec!["t1"]]);
+    }
+
+    #[test]
+    fn topo_sort_retains_cyclic_tasks() {
+        let temp = tempdir().expect("tempdir");
+        let mut planner = TaskPlanner::new(temp.path().join("task_graph.json"));
+        planner.task_graph = TaskGraph {
+            tasks: vec![
+                task("a", TaskStatus::Pending, &["b"]),
+                task("b", TaskStatus::Pending, &["a"]),
+            ],
+            updated_at: Utc::now(),
+        };
+
+        assert_eq!(group_ids(&planner.topo_sort()), vec![vec!["a", "b"]]);
+    }
+
+    fn group_ids<'a>(groups: &'a [Vec<&'a Task>]) -> Vec<Vec<&'a str>> {
+        groups
+            .iter()
+            .map(|group| group.iter().map(|task| task.id.as_str()).collect())
+            .collect()
     }
 }

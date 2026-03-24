@@ -581,6 +581,7 @@ fn placeholder_agent(id: SessionId, agent_type: AgentType, task: String) -> Agen
     AgentInfo {
         id,
         agent_type,
+        model: None,
         task,
         status: AgentStatus::Working,
         workdir: PathBuf::from("."),
