@@ -24,6 +24,8 @@ interface AgentStoreState {
   showSettings: boolean;
   showActivityFeed: boolean;
   activityLog: ActivityEvent[];
+  showMergePanel: boolean;
+  contextMenu: { agentId: string; x: number; y: number } | null;
   setAgents: (agents: AgentInfo[]) => void;
   upsertAgent: (agent: AgentInfo) => void;
   setTasks: (tasks: Task[]) => void;
@@ -42,6 +44,9 @@ interface AgentStoreState {
   toggleViewMode: () => void;
   toggleSettings: () => void;
   toggleActivityFeed: () => void;
+  toggleMergePanel: () => void;
+  setShowMergePanel: (value: boolean) => void;
+  setContextMenu: (menu: { agentId: string; x: number; y: number } | null) => void;
   pushActivity: (event: Omit<ActivityEvent, 'id' | 'timestamp'>) => void;
 }
 
@@ -63,6 +68,8 @@ export const useAgentStore = create<AgentStoreState>((set) => ({
   showSettings: false,
   showActivityFeed: false,
   activityLog: [],
+  showMergePanel: false,
+  contextMenu: null,
   setAgents: (agents) =>
     set((state) => ({
       agents,
@@ -124,6 +131,9 @@ export const useAgentStore = create<AgentStoreState>((set) => ({
   toggleViewMode: () => set((state) => ({ viewMode: state.viewMode === 'stream' ? 'cards' : 'stream' })),
   toggleSettings: () => set((state) => ({ showSettings: !state.showSettings })),
   toggleActivityFeed: () => set((state) => ({ showActivityFeed: !state.showActivityFeed })),
+  toggleMergePanel: () => set((state) => ({ showMergePanel: !state.showMergePanel })),
+  setShowMergePanel: (showMergePanel) => set({ showMergePanel }),
+  setContextMenu: (contextMenu) => set({ contextMenu }),
   pushActivity: (event) =>
     set((state) => ({
       activityLog: [

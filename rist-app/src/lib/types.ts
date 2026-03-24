@@ -160,6 +160,23 @@ export interface ActivityEvent {
   message: string;
 }
 
+export type MergeStrategy = 'ours' | 'theirs' | 'manual';
+
+export interface MergePreviewResult {
+  diff: string;
+  conflicts: string[];
+}
+
+export interface MergeSuccessResult {
+  success: true;
+}
+
+export interface MergeErrorResult {
+  error: string;
+}
+
+export type MergeResult = MergePreviewResult | MergeSuccessResult | MergeErrorResult;
+
 export const activityDot = (type: ActivityEventType): string => {
   switch (type) {
     case 'spawn':

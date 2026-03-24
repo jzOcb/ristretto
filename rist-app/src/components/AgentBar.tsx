@@ -14,6 +14,15 @@ const formatUptime = (createdAt: string): string => {
   return `${hours}h ${mins}m`;
 };
 
+const TASK_TEMPLATES = [
+  { label: 'None', value: '' },
+  { label: 'Fix bug', value: 'Fix bug: [describe]' },
+  { label: 'Add feature', value: 'Add feature: [describe]' },
+  { label: 'Refactor', value: 'Refactor: [describe]' },
+  { label: 'Review PR', value: 'Review PR #[number]' },
+  { label: 'Write tests', value: 'Write tests for: [describe]' },
+];
+
 const defaultAgentType: AgentType = { kind: 'codex' };
 
 export const AgentBar = () => {
@@ -24,9 +33,13 @@ export const AgentBar = () => {
   const replaceOutput = useAgentStore((state) => state.replaceOutput);
   const setSpawnOpen = useAgentStore((state) => state.setSpawnOpen);
   const spawnOpen = useAgentStore((state) => state.spawnOpen);
+  const setContextMenu = useAgentStore((state) => state.setContextMenu);
 
   const [agentType, setAgentType] = useState<AgentType>(defaultAgentType);
   const [task, setTask] = useState('');
+  const [repoPath, setRepoPath] = useState('');
+  const [fileOwnership, setFileOwnership] = useState('');
+  const [customCommand, setCustomCommand] = useState('');
   const [busy, setBusy] = useState(false);
   const [, setTick] = useState(0);
 
@@ -39,6 +52,9 @@ export const AgentBar = () => {
     if (!spawnOpen) {
       setTask('');
       setAgentType(defaultAgentType);
+      setRepoPath('');
+      setFileOwnership('');
+      setCustomCommand('');
     }
   }, [spawnOpen]);
 
@@ -56,32 +72,98 @@ export const AgentBar = () => {
     }
   };
 
+  const handleModelChange = (value: string) => {
+    if (value === 'custom') {
+      setAgentType({ kind: 'custom', value: customCommand || 'custom-agent' });
+    } else {
+      setAgentType({ kind: value as 'claude' | 'codex' | 'gemini' });
+    }
+  };
+
+  const modelSelectValue = agentType.kind === 'custom' ? 'custom' : agentType.kind;
+
   return (
     <>
       {spawnOpen ? (
         <section className="border-t border-zinc-800/60 bg-zinc-900/95 px-4 py-3 backdrop-blur-sm">
-          <div className="grid gap-3 lg:grid-cols-[160px_1fr_auto]">
-            <label className="space-y-1.5">
-              <span className="text-[10px] font-medium text-zinc-500">Model</span>
-              <select
-                className="w-full rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2.5 text-sm text-zinc-200 outline-none focus:border-violet-500/50"
-                onChange={(event) => setAgentType({ kind: event.target.value as 'claude' | 'codex' | 'gemini' })}
-                value={agentType.kind}
-              >
-                <option value="codex">Codex</option>
-                <option value="claude">Claude</option>
-                <option value="gemini">Gemini</option>
-              </select>
-            </label>
-            <label className="space-y-1.5">
-              <span className="text-[10px] font-medium text-zinc-500">Task</span>
-              <textarea
-                className="min-h-[72px] w-full rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2.5 text-sm text-zinc-200 outline-none placeholder:text-zinc-600 focus:border-violet-500/50"
-                onChange={(event) => setTask(event.target.value)}
-                placeholder="Describe the agent task..."
-                value={task}
-              />
-            </label>
+          <div className="grid gap-3 lg:grid-cols-[1fr_2fr_auto]">
+            {/* Left column: Model, Repo, Template */}
+            <div className="space-y-3">
+              <label className="space-y-1.5">
+                <span className="text-[10px] font-medium text-zinc-500">Model</span>
+                <select
+                  className="w-full rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2.5 text-sm text-zinc-200 outline-none focus:border-violet-500/50"
+                  onChange={(e) => handleModelChange(e.target.value)}
+                  value={modelSelectValue}
+                >
+                  <option value="codex">Codex</option>
+                  <option value="claude">Claude</option>
+                  <option value="gemini">Gemini</option>
+                  <option value="custom">Custom</option>
+                </select>
+              </label>
+              {agentType.kind === 'custom' ? (
+                <label className="space-y-1.5">
+                  <span className="text-[10px] font-medium text-zinc-500">Custom Command</span>
+                  <input
+                    className="w-full rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2.5 text-sm text-zinc-200 outline-none placeholder:text-zinc-600 focus:border-violet-500/50"
+                    onChange={(e) => {
+                      setCustomCommand(e.target.value);
+                      setAgentType({ kind: 'custom', value: e.target.value });
+                    }}
+                    placeholder="e.g. aider --model gpt-4o"
+                    value={customCommand}
+                  />
+                </label>
+              ) : null}
+              <label className="space-y-1.5">
+                <span className="text-[10px] font-medium text-zinc-500">Repository Path</span>
+                <input
+                  className="w-full rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2.5 font-mono text-sm text-zinc-200 outline-none placeholder:text-zinc-600 focus:border-violet-500/50"
+                  onChange={(e) => setRepoPath(e.target.value)}
+                  placeholder="./  (current project)"
+                  value={repoPath}
+                />
+              </label>
+              <label className="space-y-1.5">
+                <span className="text-[10px] font-medium text-zinc-500">Template</span>
+                <select
+                  className="w-full rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2.5 text-sm text-zinc-200 outline-none focus:border-violet-500/50"
+                  onChange={(e) => {
+                    if (e.target.value) setTask(e.target.value);
+                  }}
+                  value=""
+                >
+                  {TASK_TEMPLATES.map((t) => (
+                    <option key={t.label} value={t.value}>{t.label}</option>
+                  ))}
+                </select>
+              </label>
+            </div>
+
+            {/* Middle column: Task + File Ownership */}
+            <div className="space-y-3">
+              <label className="space-y-1.5">
+                <span className="text-[10px] font-medium text-zinc-500">Task</span>
+                <textarea
+                  className="min-h-[72px] w-full rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2.5 text-sm text-zinc-200 outline-none placeholder:text-zinc-600 focus:border-violet-500/50"
+                  onChange={(e) => setTask(e.target.value)}
+                  placeholder="Describe the agent task..."
+                  value={task}
+                />
+              </label>
+              <label className="space-y-1.5">
+                <span className="text-[10px] font-medium text-zinc-500">File Ownership</span>
+                <textarea
+                  className="min-h-[52px] w-full rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2.5 font-mono text-xs text-zinc-200 outline-none placeholder:text-zinc-600 focus:border-violet-500/50"
+                  onChange={(e) => setFileOwnership(e.target.value)}
+                  placeholder={"src/lib/auth.ts\nsrc/routes/login.tsx\n(one path per line)"}
+                  value={fileOwnership}
+                />
+              </label>
+            </div>
+
+            {/* Right column: Actions */}
             <div className="flex items-end gap-2">
               <button
                 className="rounded-lg border border-zinc-700 px-3 py-2 text-xs text-zinc-400 transition hover:border-zinc-500 hover:text-zinc-300"
@@ -125,6 +207,10 @@ export const AgentBar = () => {
               }`}
               key={agent.id}
               onClick={() => selectAgent(agent.id)}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                setContextMenu({ agentId: agent.id, x: e.clientX, y: e.clientY });
+              }}
               type="button"
             >
               {selectedAgentId === agent.id ? (
@@ -137,6 +223,21 @@ export const AgentBar = () => {
               </span>
               <span className="font-mono text-[9px] tabular-nums text-zinc-500">
                 {formatUptime(agent.created_at)}
+              </span>
+              {/* ⋯ button */}
+              <span
+                className="ml-1 rounded p-0.5 text-zinc-600 transition hover:bg-zinc-700 hover:text-zinc-400"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  const rect = (e.target as HTMLElement).getBoundingClientRect();
+                  setContextMenu({ agentId: agent.id, x: rect.left, y: rect.bottom + 4 });
+                }}
+              >
+                <svg className="h-3 w-3" fill="currentColor" viewBox="0 0 16 16">
+                  <circle cx="3" cy="8" r="1.5" />
+                  <circle cx="8" cy="8" r="1.5" />
+                  <circle cx="13" cy="8" r="1.5" />
+                </svg>
               </span>
             </button>
           ))}
