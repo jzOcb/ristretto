@@ -3,3 +3,6 @@
 *.swo
 .DS_Store
 .ristretto/
+rist-app/node_modules/
+rist-app/src-tauri/target/
+rist-app/dist/

@@ -1,5 +1,6 @@
 [workspace]
 members = ["ristd", "rist", "rist-mcp", "rist-channel", "rist-shared"]
+exclude = ["rist-app/src-tauri"]
 resolver = "2"
 
 [workspace.package]
