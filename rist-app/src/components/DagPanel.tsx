@@ -27,7 +27,7 @@ const layout = (nodes: Node[], edges: Edge[]) => {
   dagreGraph.setGraph({ rankdir: 'LR', ranksep: 48, nodesep: 28 });
 
   for (const node of nodes) {
-    dagreGraph.setNode(node.id, { width: 248, height: 130 });
+    dagreGraph.setNode(node.id, { width: 240, height: 120 });
   }
 
   for (const edge of edges) {
@@ -41,8 +41,8 @@ const layout = (nodes: Node[], edges: Edge[]) => {
     return {
       ...node,
       position: {
-        x: position.x - 124,
-        y: position.y - 65,
+        x: position.x - 120,
+        y: position.y - 60,
       },
     };
   });
@@ -80,13 +80,13 @@ export const DagPanel = () => {
         target: task.id,
         markerEnd: {
           type: MarkerType.ArrowClosed,
-          width: 16,
-          height: 16,
-          color: '#52525b',
+          width: 14,
+          height: 14,
+          color: '#3f3f46',
         },
         style: {
-          stroke: '#52525b',
-          strokeWidth: 1.5,
+          stroke: '#3f3f46',
+          strokeWidth: 1,
         },
         animated: task.status === 'working',
       })),
@@ -103,7 +103,7 @@ export const DagPanel = () => {
           <h2 className="panel-title">Live DAG</h2>
         </div>
       </div>
-      <div className="h-[calc(100%-4.5rem)] min-h-[360px]">
+      <div className="h-[calc(100%-4rem)] min-h-[360px]">
         <ReactFlow
           fitView
           edges={edges}
@@ -119,7 +119,7 @@ export const DagPanel = () => {
         >
           <Background color="#27272a" gap={20} size={1} />
           <Controls
-            className="!rounded-2xl !border !border-zinc-800 !bg-zinc-900/90 !text-zinc-200"
+            className="!rounded-lg !border !border-zinc-800/60 !bg-zinc-900/90 !text-zinc-300"
             showInteractive={false}
           />
         </ReactFlow>

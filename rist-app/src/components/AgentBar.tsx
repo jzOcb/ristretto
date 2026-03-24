@@ -44,12 +44,12 @@ export const AgentBar = () => {
   return (
     <>
       {spawnOpen ? (
-        <section className="border-t border-zinc-800 bg-zinc-900/95 px-5 py-4">
-          <div className="grid gap-4 lg:grid-cols-[180px_1fr_auto]">
-            <label className="space-y-2">
-              <span className="text-[10px] uppercase tracking-[0.2em] text-zinc-500">Model</span>
+        <section className="border-t border-zinc-800/60 bg-zinc-900/95 px-4 py-3 backdrop-blur-sm">
+          <div className="grid gap-3 lg:grid-cols-[160px_1fr_auto]">
+            <label className="space-y-1.5">
+              <span className="text-[10px] font-medium text-zinc-500">Model</span>
               <select
-                className="w-full rounded-2xl border border-zinc-800 bg-zinc-950 px-3 py-3 text-sm text-zinc-200 outline-none"
+                className="w-full rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2.5 text-sm text-zinc-200 outline-none focus:border-violet-500/50"
                 onChange={(event) => setAgentType({ kind: event.target.value as 'claude' | 'codex' | 'gemini' })}
                 value={agentType.kind}
               >
@@ -58,25 +58,25 @@ export const AgentBar = () => {
                 <option value="gemini">Gemini</option>
               </select>
             </label>
-            <label className="space-y-2">
-              <span className="text-[10px] uppercase tracking-[0.2em] text-zinc-500">Task</span>
+            <label className="space-y-1.5">
+              <span className="text-[10px] font-medium text-zinc-500">Task</span>
               <textarea
-                className="min-h-[92px] w-full rounded-2xl border border-zinc-800 bg-zinc-950 px-3 py-3 text-sm text-zinc-200 outline-none placeholder:text-zinc-500"
+                className="min-h-[72px] w-full rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2.5 text-sm text-zinc-200 outline-none placeholder:text-zinc-600 focus:border-violet-500/50"
                 onChange={(event) => setTask(event.target.value)}
                 placeholder="Describe the agent task..."
                 value={task}
               />
             </label>
-            <div className="flex items-end gap-3">
+            <div className="flex items-end gap-2">
               <button
-                className="rounded-full border border-zinc-700 px-4 py-2 text-sm text-zinc-300 transition hover:border-zinc-500"
+                className="rounded-lg border border-zinc-700 px-3 py-2 text-xs text-zinc-400 transition hover:border-zinc-500 hover:text-zinc-300"
                 onClick={() => setSpawnOpen(false)}
                 type="button"
               >
                 Cancel
               </button>
               <button
-                className="rounded-full bg-zinc-100 px-4 py-2 text-sm font-medium text-zinc-950 transition hover:bg-white disabled:opacity-50"
+                className="rounded-lg bg-violet-600 px-4 py-2 text-xs font-medium text-white transition hover:bg-violet-500 disabled:opacity-40"
                 disabled={!task.trim() || busy}
                 onClick={async () => {
                   setBusy(true);
@@ -99,32 +99,37 @@ export const AgentBar = () => {
           </div>
         </section>
       ) : null}
-      <footer className="border-t border-zinc-800 bg-zinc-900 px-4 py-3">
-        <div className="flex items-center gap-3 overflow-x-auto">
+      <footer className="border-t border-zinc-800/60 bg-zinc-900/90 px-3 py-2">
+        <div className="flex items-center gap-1.5 overflow-x-auto">
           {agents.map((agent) => (
             <button
-              className={`flex shrink-0 items-center gap-3 rounded-full border px-4 py-2 text-left transition ${
+              className={`relative flex shrink-0 items-center gap-2 rounded-lg px-3 py-1.5 text-left transition ${
                 selectedAgentId === agent.id
-                  ? 'border-zinc-500 bg-zinc-800 text-zinc-100'
-                  : 'border-zinc-800 bg-zinc-950 text-zinc-400 hover:border-zinc-700'
+                  ? 'bg-zinc-800 text-zinc-100'
+                  : 'text-zinc-400 hover:bg-zinc-800/50 hover:text-zinc-300'
               }`}
               key={agent.id}
               onClick={() => selectAgent(agent.id)}
               type="button"
             >
-              <span className={`h-2.5 w-2.5 rounded-full ${statusDot(agent.status)}`} />
-              <span className="max-w-[14rem] truncate text-sm">{agent.task}</span>
-              <span className="rounded-full border border-zinc-700 px-2 py-0.5 text-[10px] uppercase tracking-[0.2em]">
+              {selectedAgentId === agent.id ? (
+                <span className="absolute bottom-0 left-3 right-3 h-0.5 rounded-full bg-violet-500" />
+              ) : null}
+              <span className={`h-2 w-2 rounded-full ${statusDot(agent.status)}`} />
+              <span className="max-w-[12rem] truncate text-xs">{agent.task}</span>
+              <span className="rounded border border-zinc-700/60 px-1.5 py-0.5 text-[9px] uppercase tracking-wider text-zinc-500">
                 {agentTypeLabel(agent.agent_type)}
               </span>
             </button>
           ))}
           <button
-            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-dashed border-zinc-700 bg-zinc-950 text-xl text-zinc-300 transition hover:border-zinc-500"
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-zinc-500 transition hover:bg-zinc-800 hover:text-zinc-300"
             onClick={() => setSpawnOpen(true)}
             type="button"
           >
-            +
+            <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+              <path d="M12 5v14m-7-7h14" strokeLinecap="round" />
+            </svg>
           </button>
         </div>
       </footer>

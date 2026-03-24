@@ -25,8 +25,9 @@ export default function RawTerminal({ agentId, output }: RawTerminalProps) {
       theme: {
         background: '#09090b',
         foreground: '#e4e4e7',
-        cursor: '#f4f4f5',
-        selectionBackground: '#3f3f46',
+        cursor: '#8b5cf6',
+        cursorAccent: '#09090b',
+        selectionBackground: 'rgba(139, 92, 246, 0.25)',
       },
       fontFamily: 'JetBrains Mono, SFMono-Regular, monospace',
       fontSize: 12.5,
@@ -83,5 +84,5 @@ export default function RawTerminal({ agentId, output }: RawTerminalProps) {
     }
   }, [output]);
 
-  return <div className="h-full min-h-[420px] w-full rounded-2xl bg-zinc-950 p-3" ref={containerRef} />;
+  return <div className="h-full min-h-[420px] w-full rounded-lg bg-zinc-950 p-2.5" ref={containerRef} />;
 }

@@ -18,6 +18,7 @@ interface AgentStoreState {
   showDag: boolean;
   paletteOpen: boolean;
   spawnOpen: boolean;
+  commandInput: string;
   setAgents: (agents: AgentInfo[]) => void;
   upsertAgent: (agent: AgentInfo) => void;
   setTasks: (tasks: Task[]) => void;
@@ -32,6 +33,7 @@ interface AgentStoreState {
   toggleDag: () => void;
   setPaletteOpen: (value: boolean) => void;
   setSpawnOpen: (value: boolean) => void;
+  setCommandInput: (value: string) => void;
 }
 
 export const useAgentStore = create<AgentStoreState>((set) => ({
@@ -47,6 +49,7 @@ export const useAgentStore = create<AgentStoreState>((set) => ({
   showDag: true,
   paletteOpen: false,
   spawnOpen: false,
+  commandInput: '',
   setAgents: (agents) =>
     set((state) => ({
       agents,
@@ -104,4 +107,5 @@ export const useAgentStore = create<AgentStoreState>((set) => ({
   toggleDag: () => set((state) => ({ showDag: !state.showDag })),
   setPaletteOpen: (paletteOpen) => set({ paletteOpen }),
   setSpawnOpen: (spawnOpen) => set({ spawnOpen }),
+  setCommandInput: (commandInput) => set({ commandInput }),
 }));

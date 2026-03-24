@@ -76,20 +76,20 @@ export const CommandPalette = () => {
 
   return (
     <div className="absolute inset-0 z-40 flex items-start justify-center bg-zinc-950/60 px-4 pt-[12vh] backdrop-blur-sm">
-      <div className="w-full max-w-2xl overflow-hidden rounded-[2rem] border border-zinc-800 bg-zinc-900 shadow-[0_40px_120px_rgba(0,0,0,0.55)]">
-        <div className="border-b border-zinc-800 px-4 py-4">
+      <div className="w-full max-w-xl overflow-hidden rounded-xl border border-zinc-700/50 bg-zinc-900 shadow-[0_32px_80px_rgba(0,0,0,0.5)]">
+        <div className="border-b border-zinc-800/60 px-4 py-3">
           <input
             autoFocus
-            className="w-full bg-transparent font-display text-xl text-zinc-100 outline-none placeholder:text-zinc-500"
+            className="w-full bg-transparent text-base text-zinc-100 outline-none placeholder:text-zinc-500"
             onChange={(event) => setQuery(event.target.value)}
             placeholder={selectedAgentId ? 'Switch, spawn, or control agents' : 'Spawn or search commands'}
             value={query}
           />
         </div>
-        <div className="max-h-[26rem] overflow-auto p-3">
+        <div className="max-h-[24rem] overflow-auto p-2">
           {filteredActions.map((action) => (
             <button
-              className="flex w-full items-center justify-between rounded-2xl px-4 py-3 text-left transition hover:bg-zinc-800"
+              className="flex w-full items-center justify-between rounded-lg px-3 py-2.5 text-left transition hover:bg-violet-500/10"
               key={action.id}
               onClick={() => {
                 void Promise.resolve(action.run());
@@ -99,11 +99,11 @@ export const CommandPalette = () => {
               type="button"
             >
               <span className="text-sm text-zinc-200">{action.label}</span>
-              <span className="text-[10px] uppercase tracking-[0.2em] text-zinc-500">return</span>
+              <span className="text-[10px] text-zinc-600">↵</span>
             </button>
           ))}
           {!filteredActions.length ? (
-            <div className="rounded-2xl border border-dashed border-zinc-800 px-4 py-6 text-sm text-zinc-500">
+            <div className="rounded-lg border border-dashed border-zinc-800 px-3 py-5 text-center text-xs text-zinc-600">
               No matching command.
             </div>
           ) : null}

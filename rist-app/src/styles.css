@@ -2,7 +2,7 @@
 
 :root {
   color-scheme: dark;
-  font-family: "SF Pro Text", "Avenir Next", "Helvetica Neue", sans-serif;
+  font-family: "Inter", "SF Pro Text", "Helvetica Neue", sans-serif;
   background: #09090b;
   color: #f4f4f5;
 }
@@ -12,8 +12,8 @@ body {
   min-width: 320px;
   min-height: 100vh;
   background:
-    radial-gradient(circle at top right, rgba(245, 158, 11, 0.08), transparent 22rem),
-    radial-gradient(circle at bottom left, rgba(244, 63, 94, 0.06), transparent 24rem),
+    radial-gradient(circle at top right, rgba(139, 92, 246, 0.07), transparent 22rem),
+    radial-gradient(circle at bottom left, rgba(99, 102, 241, 0.05), transparent 24rem),
     #09090b;
 }
 
@@ -22,21 +22,26 @@ body {
 }
 
 ::selection {
-  background: rgba(245, 158, 11, 0.28);
+  background: rgba(139, 92, 246, 0.32);
 }
 
 .font-display {
-  font-family: "SF Pro Display", "Avenir Next", "Helvetica Neue", sans-serif;
+  font-family: "Inter", "SF Pro Display", "Helvetica Neue", sans-serif;
+}
+
+.font-mono {
+  font-family: "JetBrains Mono", "SFMono-Regular", "Fira Code", monospace;
 }
 
 .panel-shell {
   height: 100%;
   overflow: hidden;
-  border: 1px solid rgba(63, 63, 70, 0.7);
-  border-radius: 1.6rem;
+  border: 0.5px solid rgba(63, 63, 70, 0.5);
+  border-radius: 1rem;
   background:
-    linear-gradient(180deg, rgba(39, 39, 42, 0.72), rgba(9, 9, 11, 0.86)),
+    linear-gradient(180deg, rgba(39, 39, 42, 0.62), rgba(9, 9, 11, 0.88)),
     rgba(24, 24, 27, 0.82);
+  backdrop-filter: blur(12px);
 }
 
 .panel-header {
@@ -44,22 +49,23 @@ body {
   align-items: start;
   justify-content: space-between;
   gap: 1rem;
-  padding: 1.15rem 1.25rem;
-  border-bottom: 1px solid rgba(63, 63, 70, 0.75);
+  padding: 0.9rem 1.15rem;
+  border-bottom: 0.5px solid rgba(63, 63, 70, 0.5);
 }
 
 .panel-eyebrow {
   margin: 0;
-  font-size: 0.65rem;
-  letter-spacing: 0.24em;
+  font-size: 0.6rem;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
   color: #71717a;
+  font-weight: 500;
 }
 
 .panel-title {
-  margin: 0.35rem 0 0;
-  font-family: "SF Pro Display", "Avenir Next", sans-serif;
-  font-size: clamp(1.1rem, 1.6vw, 1.45rem);
+  margin: 0.25rem 0 0;
+  font-family: "Inter", "SF Pro Display", sans-serif;
+  font-size: clamp(1rem, 1.5vw, 1.3rem);
   font-weight: 600;
   color: #fafafa;
 }
@@ -70,27 +76,27 @@ body {
 
 .react-flow__controls-button {
   background: transparent;
-  border-color: rgba(82, 82, 91, 0.8);
+  border-color: rgba(82, 82, 91, 0.6);
   color: #e4e4e7;
 }
 
 .react-flow__panel {
-  margin: 1rem;
+  margin: 0.75rem;
 }
 
 .xterm-viewport::-webkit-scrollbar,
 *::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 8px;
+  height: 8px;
 }
 
 .xterm-viewport::-webkit-scrollbar-thumb,
 *::-webkit-scrollbar-thumb {
-  background: rgba(82, 82, 91, 0.9);
+  background: rgba(82, 82, 91, 0.7);
   border-radius: 999px;
 }
 
 .xterm-viewport::-webkit-scrollbar-track,
 *::-webkit-scrollbar-track {
-  background: rgba(24, 24, 27, 0.55);
+  background: rgba(24, 24, 27, 0.4);
 }
