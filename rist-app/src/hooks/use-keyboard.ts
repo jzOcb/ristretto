@@ -16,6 +16,7 @@ export const useKeyboard = () => {
   const toggleActivityFeed = useAgentStore((state) => state.toggleActivityFeed);
   const setPaletteOpen = useAgentStore((state) => state.setPaletteOpen);
   const setSpawnOpen = useAgentStore((state) => state.setSpawnOpen);
+  const toggleMergePanel = useAgentStore((state) => state.toggleMergePanel);
   const setAgents = useAgentStore((state) => state.setAgents);
   const paletteOpen = useAgentStore((state) => state.paletteOpen);
   const rawMode = useAgentStore((state) => state.rawMode);
@@ -72,6 +73,10 @@ export const useKeyboard = () => {
           event.preventDefault();
           toggleActivityFeed();
           break;
+        case 'm':
+          event.preventDefault();
+          toggleMergePanel();
+          break;
         case '[':
           event.preventDefault();
           switchTo(Math.max(0, index - 1));
@@ -101,6 +106,7 @@ export const useKeyboard = () => {
     setPaletteOpen,
     setAgents,
     setSpawnOpen,
+    toggleMergePanel,
     toggleActivityFeed,
     toggleDag,
     toggleRawMode,

@@ -3,9 +3,11 @@ import { useCallback, useState, type CSSProperties } from 'react';
 import { ActivityFeed } from './components/ActivityFeed';
 import { AgentBar } from './components/AgentBar';
 import { AgentCards } from './components/AgentCards';
+import { AgentContextMenu } from './components/AgentContextMenu';
 import { AgentView } from './components/AgentView';
 import { CommandPalette } from './components/CommandPalette';
 import { DagPanel } from './components/DagPanel';
+import { MergePanel } from './components/MergePanel';
 import { StatusBar } from './components/StatusBar';
 import { useDaemon } from './hooks/use-daemon';
 import { useKeyboard } from './hooks/use-keyboard';
@@ -74,6 +76,8 @@ export default function App() {
         <CommandPalette />
       </div>
       <AgentBar />
+      <MergePanel />
+      <AgentContextMenu />
     </main>
   );
 }
