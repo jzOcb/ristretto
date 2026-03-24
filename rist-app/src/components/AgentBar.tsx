@@ -5,6 +5,15 @@ import type { AgentInfo, AgentType } from '../lib/types';
 import { agentTypeLabel, statusDot } from '../lib/types';
 import { useAgentStore } from '../stores/agent-store';
 
+const formatUptime = (createdAt: string): string => {
+  const elapsed = Math.max(0, Math.floor((Date.now() - new Date(createdAt).getTime()) / 1000));
+  if (elapsed < 60) return `${elapsed}s`;
+  if (elapsed < 3600) return `${Math.floor(elapsed / 60)}m ${elapsed % 60}s`;
+  const hours = Math.floor(elapsed / 3600);
+  const mins = Math.floor((elapsed % 3600) / 60);
+  return `${hours}h ${mins}m`;
+};
+
 const defaultAgentType: AgentType = { kind: 'codex' };
 
 export const AgentBar = () => {
@@ -19,6 +28,12 @@ export const AgentBar = () => {
   const [agentType, setAgentType] = useState<AgentType>(defaultAgentType);
   const [task, setTask] = useState('');
   const [busy, setBusy] = useState(false);
+  const [, setTick] = useState(0);
+
+  useEffect(() => {
+    const id = setInterval(() => setTick((t) => t + 1), 1000);
+    return () => clearInterval(id);
+  }, []);
 
   useEffect(() => {
     if (!spawnOpen) {
@@ -119,6 +134,9 @@ export const AgentBar = () => {
               <span className="max-w-[12rem] truncate text-xs">{agent.task}</span>
               <span className="rounded border border-zinc-700/60 px-1.5 py-0.5 text-[9px] uppercase tracking-wider text-zinc-500">
                 {agentTypeLabel(agent.agent_type)}
+              </span>
+              <span className="font-mono text-[9px] tabular-nums text-zinc-500">
+                {formatUptime(agent.created_at)}
               </span>
             </button>
           ))}

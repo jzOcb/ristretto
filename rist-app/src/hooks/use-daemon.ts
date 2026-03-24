@@ -22,6 +22,7 @@ export const useDaemon = () => {
   const updateTaskStatus = useAgentStore((state) => state.updateTaskStatus);
   const updateAgentStatus = useAgentStore((state) => state.updateAgentStatus);
   const setConnection = useAgentStore((state) => state.setConnection);
+  const pushActivity = useAgentStore((state) => state.pushActivity);
 
   useEffect(() => {
     let mounted = true;
@@ -39,6 +40,9 @@ export const useDaemon = () => {
 
         setAgents(agents);
         setTasks(tasks);
+        for (const agent of agents) {
+          pushActivity({ agentId: agent.id, type: 'spawn', message: `Agent spawned: ${agent.task.slice(0, 60)}` });
+        }
         setConnection({
           connected: true,
           message: `Connected to ristd · ${agents.length} agents`,
@@ -71,6 +75,14 @@ export const useDaemon = () => {
       }),
       listen<AgentStatusEvent>('agent-status', (event) => {
         updateAgentStatus(event.payload.agent_id, event.payload.new_status, event.payload.exit_code);
+        const { agent_id, new_status, old_status } = event.payload;
+        if (new_status === 'done') {
+          pushActivity({ agentId: agent_id, type: 'done', message: `Agent completed` });
+        } else if (new_status === 'error') {
+          pushActivity({ agentId: agent_id, type: 'error', message: `Agent errored` });
+        } else if (new_status !== old_status) {
+          pushActivity({ agentId: agent_id, type: 'status', message: `${old_status} → ${new_status}` });
+        }
       }),
       listen<TaskUpdateEvent>('task-update', (event) => {
         updateTaskStatus(event.payload.task_id, event.payload.status);
@@ -80,9 +92,19 @@ export const useDaemon = () => {
           event.payload.agent_id,
           `\n[context-warning] Usage reached ${event.payload.usage_pct.toFixed(1)}%\n`,
         );
+        pushActivity({
+          agentId: event.payload.agent_id,
+          type: 'warning',
+          message: `Context usage ${event.payload.usage_pct.toFixed(1)}%`,
+        });
       }),
       listen<LoopDetectedEvent>('loop-detected', (event) => {
         appendOutput(event.payload.agent_id, `\n[loop-detected] ${event.payload.pattern}\n`);
+        pushActivity({
+          agentId: event.payload.agent_id,
+          type: 'loop',
+          message: `Loop detected: ${event.payload.pattern}`,
+        });
       }),
     ]);
 
@@ -96,5 +118,5 @@ export const useDaemon = () => {
         }
       });
     };
-  }, [appendOutput, replaceOutput, setAgents, setConnection, setTasks, updateAgentStatus, updateTaskStatus]);
+  }, [appendOutput, pushActivity, replaceOutput, setAgents, setConnection, setTasks, updateAgentStatus, updateTaskStatus]);
 };

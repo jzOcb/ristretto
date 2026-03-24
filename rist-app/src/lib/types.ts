@@ -150,6 +150,33 @@ export interface LoopDetectedEvent {
   pattern: string;
 }
 
+export type ActivityEventType = 'spawn' | 'done' | 'error' | 'warning' | 'loop' | 'status';
+
+export interface ActivityEvent {
+  id: string;
+  timestamp: number;
+  agentId: string;
+  type: ActivityEventType;
+  message: string;
+}
+
+export const activityDot = (type: ActivityEventType): string => {
+  switch (type) {
+    case 'spawn':
+      return 'bg-violet-500';
+    case 'done':
+      return 'bg-emerald-500';
+    case 'error':
+      return 'bg-rose-500';
+    case 'warning':
+      return 'bg-amber-400';
+    case 'loop':
+      return 'bg-amber-400';
+    case 'status':
+      return 'bg-sky-500';
+  }
+};
+
 export const agentTypeLabel = (agentType: AgentType | null | undefined): string => {
   if (!agentType) {
     return 'unassigned';

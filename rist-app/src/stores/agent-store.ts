@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 
 import type {
+  ActivityEvent,
   AgentInfo,
   AgentStatus,
   ConnectionState,
@@ -19,6 +20,9 @@ interface AgentStoreState {
   paletteOpen: boolean;
   spawnOpen: boolean;
   commandInput: string;
+  viewMode: 'stream' | 'cards';
+  showActivityFeed: boolean;
+  activityLog: ActivityEvent[];
   setAgents: (agents: AgentInfo[]) => void;
   upsertAgent: (agent: AgentInfo) => void;
   setTasks: (tasks: Task[]) => void;
@@ -34,6 +38,9 @@ interface AgentStoreState {
   setPaletteOpen: (value: boolean) => void;
   setSpawnOpen: (value: boolean) => void;
   setCommandInput: (value: string) => void;
+  toggleViewMode: () => void;
+  toggleActivityFeed: () => void;
+  pushActivity: (event: Omit<ActivityEvent, 'id' | 'timestamp'>) => void;
 }
 
 export const useAgentStore = create<AgentStoreState>((set) => ({
@@ -50,6 +57,9 @@ export const useAgentStore = create<AgentStoreState>((set) => ({
   paletteOpen: false,
   spawnOpen: false,
   commandInput: '',
+  viewMode: 'stream',
+  showActivityFeed: false,
+  activityLog: [],
   setAgents: (agents) =>
     set((state) => ({
       agents,
@@ -108,4 +118,13 @@ export const useAgentStore = create<AgentStoreState>((set) => ({
   setPaletteOpen: (paletteOpen) => set({ paletteOpen }),
   setSpawnOpen: (spawnOpen) => set({ spawnOpen }),
   setCommandInput: (commandInput) => set({ commandInput }),
+  toggleViewMode: () => set((state) => ({ viewMode: state.viewMode === 'stream' ? 'cards' : 'stream' })),
+  toggleActivityFeed: () => set((state) => ({ showActivityFeed: !state.showActivityFeed })),
+  pushActivity: (event) =>
+    set((state) => ({
+      activityLog: [
+        ...state.activityLog,
+        { ...event, id: `act-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, timestamp: Date.now() },
+      ].slice(-200),
+    })),
 }));

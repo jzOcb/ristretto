@@ -12,6 +12,8 @@ export const useKeyboard = () => {
   const selectAgent = useAgentStore((state) => state.selectAgent);
   const toggleRawMode = useAgentStore((state) => state.toggleRawMode);
   const toggleDag = useAgentStore((state) => state.toggleDag);
+  const toggleViewMode = useAgentStore((state) => state.toggleViewMode);
+  const toggleActivityFeed = useAgentStore((state) => state.toggleActivityFeed);
   const setPaletteOpen = useAgentStore((state) => state.setPaletteOpen);
   const setSpawnOpen = useAgentStore((state) => state.setSpawnOpen);
   const setAgents = useAgentStore((state) => state.setAgents);
@@ -62,6 +64,14 @@ export const useKeyboard = () => {
           event.preventDefault();
           toggleDag();
           break;
+        case 'g':
+          event.preventDefault();
+          toggleViewMode();
+          break;
+        case 'a':
+          event.preventDefault();
+          toggleActivityFeed();
+          break;
         case '[':
           event.preventDefault();
           switchTo(Math.max(0, index - 1));
@@ -91,7 +101,9 @@ export const useKeyboard = () => {
     setPaletteOpen,
     setAgents,
     setSpawnOpen,
+    toggleActivityFeed,
     toggleDag,
     toggleRawMode,
+    toggleViewMode,
   ]);
 };
