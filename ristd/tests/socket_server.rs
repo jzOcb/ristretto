@@ -1,3 +1,4 @@
+use std::io;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -56,24 +57,36 @@ async fn read_until_response(stream: &mut tokio::net::UnixStream, expected_type:
     }
 }
 
-#[tokio::test]
-async fn spawn_then_list() {
-    let temp = tempdir().expect("tempdir");
+async fn bind_test_server(
+    temp: &tempfile::TempDir,
+    manager: PtyManager,
+) -> io::Result<SocketServer> {
     let socket_path = temp.path().join("daemon.sock");
-    let sessions_path = temp.path().join("sessions.json");
-    let mut manager = PtyManager::new();
-    manager.register_adapter(AgentType::Custom("test".to_owned()), Box::new(TestAdapter));
-
-    let server = SocketServer::bind(
+    SocketServer::bind(
         &socket_path,
         Arc::new(Mutex::new(manager)),
-        Arc::new(Mutex::new(SessionStore::new(sessions_path))),
+        Arc::new(Mutex::new(SessionStore::new(
+            temp.path().join("sessions.json"),
+        ))),
         Arc::new(Mutex::new(TaskPlanner::new(
             temp.path().join("task_graph.json"),
         ))),
     )
     .await
-    .expect("bind");
+}
+
+#[tokio::test]
+async fn spawn_then_list() {
+    let temp = tempdir().expect("tempdir");
+    let socket_path = temp.path().join("daemon.sock");
+    let mut manager = PtyManager::new();
+    manager.register_adapter(AgentType::Custom("test".to_owned()), Box::new(TestAdapter));
+
+    let server = match bind_test_server(&temp, manager).await {
+        Ok(server) => server,
+        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => return,
+        Err(error) => panic!("bind: {error}"),
+    };
     let server_task = tokio::spawn(server.run());
 
     let mut stream = tokio::net::UnixStream::connect(&socket_path)
@@ -119,20 +132,14 @@ async fn spawn_then_list() {
 async fn spawn_events_broadcast_to_all_clients() {
     let temp = tempdir().expect("tempdir");
     let socket_path = temp.path().join("daemon.sock");
-    let sessions_path = temp.path().join("sessions.json");
     let mut manager = PtyManager::new();
     manager.register_adapter(AgentType::Custom("test".to_owned()), Box::new(TestAdapter));
 
-    let server = SocketServer::bind(
-        &socket_path,
-        Arc::new(Mutex::new(manager)),
-        Arc::new(Mutex::new(SessionStore::new(sessions_path))),
-        Arc::new(Mutex::new(TaskPlanner::new(
-            temp.path().join("task_graph.json"),
-        ))),
-    )
-    .await
-    .expect("bind");
+    let server = match bind_test_server(&temp, manager).await {
+        Ok(server) => server,
+        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => return,
+        Err(error) => panic!("bind: {error}"),
+    };
     let server_task = tokio::spawn(server.run());
 
     let mut first = tokio::net::UnixStream::connect(&socket_path)

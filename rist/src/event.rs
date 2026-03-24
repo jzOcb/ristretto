@@ -222,10 +222,10 @@ async fn handle_normal_mode(
             let index = ch.to_digit(10).unwrap_or(1) as usize - 1;
             if app.view_mode == ViewMode::Graph {
                 let ordered = app
-                    .compute_dag_layout(&app.task_graph)
-                    .into_iter()
+                    .dag_layout
+                    .iter()
                     .flatten()
-                    .map(|(task_id, _)| task_id)
+                    .map(|(task_id, _)| task_id.clone())
                     .collect::<Vec<_>>();
                 if let Some(task_id) = ordered.get(index) {
                     app.selected_task = Some(task_id.clone());

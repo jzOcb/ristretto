@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use rist_shared::protocol::Event;
-use rist_shared::{AgentInfo, AgentStatus, ContextBudget, SessionId, TaskGraph};
+use rist_shared::{topo_sort, AgentInfo, AgentStatus, ContextBudget, SessionId, TaskGraph};
 
 use rist::daemon_client::{ClientEvent, DaemonClient};
 
@@ -37,7 +37,9 @@ pub struct App {
     /// Expanded task id whose terminal is visible in graph mode.
     pub expanded_node: Option<String>,
     /// Current graph scroll offset as `(horizontal, vertical)`.
-    pub dag_scroll: (i16, i16),
+    pub dag_scroll: (i32, i32),
+    /// Cached task ids grouped by depth with their top-left positions.
+    pub dag_layout: Vec<Vec<(String, (u16, u16))>>,
     /// Whether the file ownership overlay is visible.
     pub show_file_overlay: bool,
     /// Whether the main loop should keep running.
@@ -102,6 +104,7 @@ impl App {
             selected_task: None,
             expanded_node: None,
             dag_scroll: (0, 0),
+            dag_layout: Vec::new(),
             show_file_overlay: false,
             running: true,
             locale,
@@ -199,14 +202,13 @@ impl App {
     /// Replaces the task graph snapshot and keeps graph selection valid.
     pub fn refresh_task_graph(&mut self, task_graph: TaskGraph) {
         self.task_graph = task_graph;
+        self.recompute_dag_layout();
 
         let contains_task =
             |task_id: &str| self.task_graph.tasks.iter().any(|task| task.id == task_id);
-        if self.selected_task.as_deref().is_some_and(contains_task) {
-            return;
+        if !self.selected_task.as_deref().is_some_and(contains_task) {
+            self.selected_task = self.task_graph.tasks.first().map(|task| task.id.clone());
         }
-
-        self.selected_task = self.task_graph.tasks.first().map(|task| task.id.clone());
         if self
             .expanded_node
             .as_deref()
@@ -330,103 +332,31 @@ impl App {
 
     /// Returns task ids grouped by depth with their top-left positions.
     #[must_use]
-    pub fn compute_dag_layout(&self, task_graph: &TaskGraph) -> Vec<Vec<(String, (u16, u16))>> {
-        let mut task_map = HashMap::new();
-        let mut indegree = HashMap::new();
-        let mut adjacency: HashMap<&str, Vec<&str>> = HashMap::new();
-
-        for task in &task_graph.tasks {
-            task_map.insert(task.id.as_str(), task);
-            indegree.insert(task.id.as_str(), 0usize);
-            adjacency.entry(task.id.as_str()).or_default();
-        }
-
-        for task in &task_graph.tasks {
-            for dep in &task.depends_on {
-                if task_map.contains_key(dep.as_str()) {
-                    *indegree.entry(task.id.as_str()).or_default() += 1;
-                    adjacency
-                        .entry(dep.as_str())
-                        .or_default()
-                        .push(task.id.as_str());
-                }
-            }
-        }
-
-        let mut frontier = indegree
-            .iter()
-            .filter_map(|(task_id, degree)| (*degree == 0).then_some(*task_id))
-            .collect::<Vec<_>>();
-        frontier.sort_unstable();
-
-        let mut levels = Vec::new();
-        let mut seen = HashSet::new();
-        while !frontier.is_empty() {
-            let current = std::mem::take(&mut frontier);
-            let mut current_level = current;
-            current_level.sort_unstable();
-
-            let mut next = Vec::new();
-            for task_id in current_level.iter().copied() {
-                seen.insert(task_id);
-                if let Some(children) = adjacency.get(task_id) {
-                    for child in children {
-                        if let Some(value) = indegree.get_mut(child) {
-                            *value = value.saturating_sub(1);
-                            if *value == 0 {
-                                next.push(*child);
-                            }
-                        }
-                    }
-                }
-            }
-
-            let depth = levels.len() as u16;
-            let column = current_level
-                .iter()
-                .enumerate()
-                .map(|(row, task_id)| {
-                    (
-                        (*task_id).to_owned(),
-                        (depth.saturating_mul(18), row as u16 * 6),
-                    )
-                })
-                .collect::<Vec<_>>();
-            levels.push(column);
-
-            next.sort_unstable();
-            next.dedup();
-            frontier = next;
-        }
-
-        let mut unresolved = task_graph
-            .tasks
-            .iter()
-            .filter(|task| !seen.contains(task.id.as_str()))
-            .map(|task| task.id.clone())
-            .collect::<Vec<_>>();
-        unresolved.sort();
-        if !unresolved.is_empty() {
-            let depth = levels.len() as u16;
-            levels.push(
-                unresolved
+    pub fn compute_dag_layout(task_graph: &TaskGraph) -> Vec<Vec<(String, (u16, u16))>> {
+        topo_sort(task_graph)
+            .into_iter()
+            .enumerate()
+            .map(|(depth, group)| {
+                group
                     .into_iter()
                     .enumerate()
-                    .map(|(row, task_id)| (task_id, (depth.saturating_mul(18), row as u16 * 6)))
-                    .collect(),
-            );
-        }
+                    .map(|(row, task_id)| (task_id.to_owned(), (depth as u16 * 18, row as u16 * 6)))
+                    .collect()
+            })
+            .collect()
+    }
 
-        levels
+    fn recompute_dag_layout(&mut self) {
+        self.dag_layout = Self::compute_dag_layout(&self.task_graph);
     }
 
     /// Selects the next task in topological order.
     pub fn cycle_task_selection(&mut self, forward: bool) {
         let ordered = self
-            .compute_dag_layout(&self.task_graph)
-            .into_iter()
+            .dag_layout
+            .iter()
             .flatten()
-            .map(|(task_id, _)| task_id)
+            .map(|(task_id, _)| task_id.clone())
             .collect::<Vec<_>>();
         if ordered.is_empty() {
             self.selected_task = None;
@@ -450,7 +380,7 @@ impl App {
 
     /// Moves graph selection by one column or row.
     pub fn move_task_selection(&mut self, delta_x: i16, delta_y: i16) {
-        let layout = self.compute_dag_layout(&self.task_graph);
+        let layout = &self.dag_layout;
         let selected = self.selected_task.clone().or_else(|| {
             layout
                 .first()
@@ -870,10 +800,87 @@ mod tests {
             updated_at: chrono::Utc::now(),
         });
 
-        let layout = app.compute_dag_layout(&app.task_graph);
+        let layout = &app.dag_layout;
         assert_eq!(layout.len(), 2);
         assert_eq!(layout[0][0].0, "t1");
         assert_eq!(layout[1][0].0, "t2");
         assert!(layout[1][0].1 .0 > layout[0][0].1 .0);
+    }
+
+    #[test]
+    fn compute_dag_layout_returns_empty_for_empty_graph() {
+        let mut app = App::new("en".to_owned());
+        app.refresh_task_graph(rist_shared::TaskGraph {
+            tasks: Vec::new(),
+            updated_at: chrono::Utc::now(),
+        });
+
+        assert!(app.dag_layout.is_empty());
+    }
+
+    #[test]
+    fn compute_dag_layout_groups_single_task_graph() {
+        let mut app = App::new("en".to_owned());
+        app.refresh_task_graph(rist_shared::TaskGraph {
+            tasks: vec![serde_json::from_value(json!({
+                "id": "t1",
+                "title": "Only",
+                "description": null,
+                "status": "pending",
+                "priority": "medium",
+                "agent_type": null,
+                "owner": null,
+                "depends_on": [],
+                "file_ownership": []
+            }))
+            .expect("task")],
+            updated_at: chrono::Utc::now(),
+        });
+
+        assert_eq!(app.dag_layout.len(), 1);
+        assert_eq!(app.dag_layout[0][0].0, "t1");
+    }
+
+    #[test]
+    fn compute_dag_layout_retains_cyclic_tasks() {
+        let mut app = App::new("en".to_owned());
+        app.refresh_task_graph(rist_shared::TaskGraph {
+            tasks: vec![
+                serde_json::from_value(json!({
+                    "id": "a",
+                    "title": "A",
+                    "description": null,
+                    "status": "pending",
+                    "priority": "medium",
+                    "agent_type": null,
+                    "owner": null,
+                    "depends_on": ["b"],
+                    "file_ownership": []
+                }))
+                .expect("task"),
+                serde_json::from_value(json!({
+                    "id": "b",
+                    "title": "B",
+                    "description": null,
+                    "status": "pending",
+                    "priority": "medium",
+                    "agent_type": null,
+                    "owner": null,
+                    "depends_on": ["a"],
+                    "file_ownership": []
+                }))
+                .expect("task"),
+            ],
+            updated_at: chrono::Utc::now(),
+        });
+
+        assert_eq!(app.dag_layout.len(), 1);
+        assert_eq!(
+            app.dag_layout[0]
+                .iter()
+                .map(|(task_id, _)| task_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a", "b"]
+        );
     }
 }

@@ -395,8 +395,9 @@ impl Widget for GraphWidget<'_> {
             return;
         }
 
-        let layout = self.app.compute_dag_layout(&self.app.task_graph);
-        let positions = layout
+        let positions = self
+            .app
+            .dag_layout
             .iter()
             .flatten()
             .cloned()
@@ -432,24 +433,24 @@ fn draw_edges(
     area: Rect,
     graph: &TaskGraph,
     positions: &HashMap<String, (u16, u16)>,
-    scroll: (i16, i16),
+    scroll: (i32, i32),
 ) {
     for task in &graph.tasks {
         let Some(&(to_x, to_y)) = positions.get(&task.id) else {
             continue;
         };
-        let target_x = to_x as i16 - scroll.0;
-        let target_y = to_y as i16 - scroll.1;
-        let arrow_x = target_x + NODE_WIDTH as i16;
+        let target_x = i32::from(to_x) - scroll.0;
+        let target_y = i32::from(to_y) - scroll.1;
+        let arrow_x = target_x + i32::from(NODE_WIDTH);
         let center_y = target_y + 1;
 
         for dependency in &task.depends_on {
             let Some(&(from_x, from_y)) = positions.get(dependency) else {
                 continue;
             };
-            let source_x = from_x as i16 - scroll.0;
-            let source_y = from_y as i16 - scroll.1;
-            let start_x = source_x + NODE_WIDTH as i16;
+            let source_x = i32::from(from_x) - scroll.0;
+            let source_y = i32::from(from_y) - scroll.1;
+            let start_x = source_x + i32::from(NODE_WIDTH);
             let start_y = source_y + 1;
             let mid_x = ((start_x + target_x) / 2).max(start_x + 1);
 
@@ -495,7 +496,7 @@ fn draw_edges(
                     area,
                     mid_x,
                     center_y,
-                    "┐",
+                    "┌",
                     Style::default().fg(Color::DarkGray),
                 );
                 draw_vertical(
@@ -512,7 +513,7 @@ fn draw_edges(
                     area,
                     mid_x,
                     start_y,
-                    "└",
+                    "┘",
                     Style::default().fg(Color::DarkGray),
                 );
             }
@@ -543,9 +544,9 @@ fn draw_edges(
 fn draw_horizontal(
     buf: &mut Buffer,
     area: Rect,
-    start_x: i16,
-    end_x: i16,
-    y: i16,
+    start_x: i32,
+    end_x: i32,
+    y: i32,
     symbol: char,
     style: Style,
 ) {
@@ -560,9 +561,9 @@ fn draw_horizontal(
 fn draw_vertical(
     buf: &mut Buffer,
     area: Rect,
-    x: i16,
-    start_y: i16,
-    end_y: i16,
+    x: i32,
+    start_y: i32,
+    end_y: i32,
     symbol: char,
     style: Style,
 ) {
@@ -574,11 +575,11 @@ fn draw_vertical(
     }
 }
 
-fn draw_symbol(buf: &mut Buffer, area: Rect, x: i16, y: i16, symbol: &str, style: Style) {
-    if x < area.x as i16
-        || y < area.y as i16
-        || x >= (area.x + area.width) as i16
-        || y >= (area.y + area.height) as i16
+fn draw_symbol(buf: &mut Buffer, area: Rect, x: i32, y: i32, symbol: &str, style: Style) {
+    if x < i32::from(area.x)
+        || y < i32::from(area.y)
+        || x >= i32::from(area.x + area.width)
+        || y >= i32::from(area.y + area.height)
     {
         return;
     }
@@ -594,10 +595,10 @@ fn draw_task_node(
     y: u16,
     task: &Task,
     app: &App,
-    scroll: (i16, i16),
+    scroll: (i32, i32),
 ) {
-    let node_x = area.x as i16 + x as i16 - scroll.0;
-    let node_y = area.y as i16 + y as i16 - scroll.1;
+    let node_x = i32::from(area.x) + i32::from(x) - scroll.0;
+    let node_y = i32::from(area.y) + i32::from(y) - scroll.1;
     let selected = app.selected_task.as_deref() == Some(task.id.as_str());
     let expanded = app.expanded_node.as_deref() == Some(task.id.as_str());
     let (symbol, color) = task_status_style(&task.status);
@@ -611,9 +612,9 @@ fn draw_task_node(
 
     let border = [
         ("┌", 0, 0),
-        ("┐", NODE_WIDTH as i16 - 1, 0),
-        ("└", 0, NODE_HEIGHT as i16 - 1),
-        ("┘", NODE_WIDTH as i16 - 1, NODE_HEIGHT as i16 - 1),
+        ("┐", i32::from(NODE_WIDTH) - 1, 0),
+        ("└", 0, i32::from(NODE_HEIGHT) - 1),
+        ("┘", i32::from(NODE_WIDTH) - 1, i32::from(NODE_HEIGHT) - 1),
     ];
     for (corner, dx, dy) in border {
         draw_symbol(buf, area, node_x + dx, node_y + dy, corner, border_style);
@@ -622,7 +623,7 @@ fn draw_task_node(
         buf,
         area,
         node_x + 1,
-        node_x + NODE_WIDTH as i16 - 2,
+        node_x + i32::from(NODE_WIDTH) - 2,
         node_y,
         '─',
         border_style,
@@ -631,8 +632,8 @@ fn draw_task_node(
         buf,
         area,
         node_x + 1,
-        node_x + NODE_WIDTH as i16 - 2,
-        node_y + NODE_HEIGHT as i16 - 1,
+        node_x + i32::from(NODE_WIDTH) - 2,
+        node_y + i32::from(NODE_HEIGHT) - 1,
         '─',
         border_style,
     );
@@ -641,16 +642,16 @@ fn draw_task_node(
         area,
         node_x,
         node_y + 1,
-        node_y + NODE_HEIGHT as i16 - 2,
+        node_y + i32::from(NODE_HEIGHT) - 2,
         '│',
         border_style,
     );
     draw_vertical(
         buf,
         area,
-        node_x + NODE_WIDTH as i16 - 1,
+        node_x + i32::from(NODE_WIDTH) - 1,
         node_y + 1,
-        node_y + NODE_HEIGHT as i16 - 2,
+        node_y + i32::from(NODE_HEIGHT) - 2,
         '│',
         border_style,
     );
@@ -681,10 +682,28 @@ fn draw_task_node(
     );
     let text_style = Style::default().fg(color);
 
-    if node_x >= area.x as i16 && node_y >= area.y as i16 {
-        buf.set_string(node_x as u16 + 1, node_y as u16 + 1, title, text_style);
+    let max_width = if node_x >= i32::from(area.x) {
+        (area.x + area.width).saturating_sub((node_x as u16).saturating_add(1))
+    } else {
+        0
+    };
+    if node_x >= i32::from(area.x) && node_y >= i32::from(area.y) && max_width > 0 {
+        buf.set_stringn(
+            node_x as u16 + 1,
+            node_y as u16 + 1,
+            title,
+            max_width as usize,
+            text_style,
+        );
     }
-    if node_y + 2 < (area.y + area.height) as i16 {
-        buf.set_string(node_x as u16 + 1, node_y as u16 + 2, model_line, text_style);
+    if node_x >= i32::from(area.x) && node_y + 2 < i32::from(area.y + area.height) && max_width > 0
+    {
+        buf.set_stringn(
+            node_x as u16 + 1,
+            node_y as u16 + 2,
+            model_line,
+            max_width as usize,
+            text_style,
+        );
     }
 }

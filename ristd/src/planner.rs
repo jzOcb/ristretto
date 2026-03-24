@@ -1,12 +1,12 @@
 //! Persistent task-planning state and dependency queries.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
 use chrono::Utc;
-use rist_shared::{SessionId, Task, TaskGraph, TaskStatus};
+use rist_shared::{topo_sort, SessionId, Task, TaskGraph, TaskStatus};
 
 /// Planner-owned task graph persistence and scheduling queries.
 #[derive(Debug, Clone)]
@@ -112,80 +112,17 @@ impl TaskPlanner {
     /// Returns tasks grouped by topological depth using Kahn's algorithm.
     #[must_use]
     pub fn topo_sort(&self) -> Vec<Vec<&Task>> {
-        let mut tasks = HashMap::new();
-        let mut indegree = HashMap::new();
-        let mut adjacency: HashMap<&str, Vec<&str>> = HashMap::new();
-
-        for task in &self.task_graph.tasks {
-            tasks.insert(task.id.as_str(), task);
-            indegree.insert(task.id.as_str(), 0usize);
-            adjacency.entry(task.id.as_str()).or_default();
-        }
-
-        for task in &self.task_graph.tasks {
-            for dependency in &task.depends_on {
-                if tasks.contains_key(dependency.as_str()) {
-                    *indegree.entry(task.id.as_str()).or_default() += 1;
-                    adjacency
-                        .entry(dependency.as_str())
-                        .or_default()
-                        .push(task.id.as_str());
-                }
-            }
-        }
-
-        let mut frontier = indegree
-            .iter()
-            .filter_map(|(task_id, count)| (*count == 0).then_some(*task_id))
-            .collect::<Vec<_>>();
-        frontier.sort_unstable();
-
-        let mut groups = Vec::new();
-        let mut seen = HashSet::new();
-        while !frontier.is_empty() {
-            let current = std::mem::take(&mut frontier);
-            let mut next = Vec::new();
-            let mut group_ids = current;
-            group_ids.sort_unstable();
-
-            for task_id in group_ids.iter().copied() {
-                seen.insert(task_id);
-                if let Some(children) = adjacency.get(task_id) {
-                    for child in children {
-                        if let Some(count) = indegree.get_mut(child) {
-                            *count = count.saturating_sub(1);
-                            if *count == 0 {
-                                next.push(*child);
-                            }
-                        }
-                    }
-                }
-            }
-
-            groups.push(
-                group_ids
-                    .iter()
-                    .filter_map(|task_id| tasks.get(task_id).copied())
-                    .collect(),
-            );
-
-            next.sort_unstable();
-            next.dedup();
-            frontier = next;
-        }
-
-        let mut remaining = self
-            .task_graph
-            .tasks
-            .iter()
-            .filter(|task| !seen.contains(task.id.as_str()))
-            .collect::<Vec<_>>();
-        remaining.sort_by(|left, right| left.id.cmp(&right.id));
-        if !remaining.is_empty() {
-            groups.push(remaining);
-        }
-
-        groups
+        topo_sort(&self.task_graph)
+            .into_iter()
+            .map(|group| {
+                group
+                    .into_iter()
+                    .filter_map(|task_id| {
+                        self.task_graph.tasks.iter().find(|task| task.id == task_id)
+                    })
+                    .collect()
+            })
+            .collect()
     }
 
     /// Assigns an agent to a task.
@@ -446,6 +383,41 @@ mod tests {
 
         let groups = planner.topo_sort();
         assert_eq!(group_ids(&groups), vec![vec!["t1", "t2"], vec!["t3", "t4"]]);
+    }
+
+    #[test]
+    fn topo_sort_returns_empty_for_empty_graph() {
+        let temp = tempdir().expect("tempdir");
+        let planner = TaskPlanner::new(temp.path().join("task_graph.json"));
+
+        assert!(planner.topo_sort().is_empty());
+    }
+
+    #[test]
+    fn topo_sort_groups_single_task_graph() {
+        let temp = tempdir().expect("tempdir");
+        let mut planner = TaskPlanner::new(temp.path().join("task_graph.json"));
+        planner.task_graph = TaskGraph {
+            tasks: vec![task("t1", TaskStatus::Pending, &[])],
+            updated_at: Utc::now(),
+        };
+
+        assert_eq!(group_ids(&planner.topo_sort()), vec![vec!["t1"]]);
+    }
+
+    #[test]
+    fn topo_sort_retains_cyclic_tasks() {
+        let temp = tempdir().expect("tempdir");
+        let mut planner = TaskPlanner::new(temp.path().join("task_graph.json"));
+        planner.task_graph = TaskGraph {
+            tasks: vec![
+                task("a", TaskStatus::Pending, &["b"]),
+                task("b", TaskStatus::Pending, &["a"]),
+            ],
+            updated_at: Utc::now(),
+        };
+
+        assert_eq!(group_ids(&planner.topo_sort()), vec![vec!["a", "b"]]);
     }
 
     fn group_ids<'a>(groups: &'a [Vec<&'a Task>]) -> Vec<Vec<&'a str>> {
